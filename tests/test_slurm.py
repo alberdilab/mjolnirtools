@@ -43,7 +43,8 @@ class SlurmCommandTests(unittest.TestCase):
                     "squeue",
                     "-u",
                     "alice",
-                    "--format=%.18i %.9P %.30j %.8u %.8T %.10M %.9l %.6m %k",
+                    "--noheader",
+                    "--format=%i|%P|%j|%u|%T|%M|%l|%m|%k",
                 ],
             )
 
@@ -52,21 +53,113 @@ class SlurmCommandTests(unittest.TestCase):
             slurm.build_slurm_list_command(all_users=True),
             [
                 "squeue",
-                "--format=%.18i %.9P %.30j %.8u %.8T %.10M %.9l %.6m %k",
+                "--noheader",
+                "--format=%i|%P|%j|%u|%T|%M|%l|%m|%k",
             ],
         )
+
+    def test_slurm_pending_command_filters_current_user_pending_jobs(self):
+        with mock.patch("getpass.getuser", return_value="alice"):
+            self.assertEqual(
+                slurm.build_slurm_pending_command(),
+                [
+                    "squeue",
+                    "-u",
+                    "alice",
+                    "--states=PENDING",
+                    "--noheader",
+                    "--format=%i|%P|%j|%u|%T|%M|%l|%m|%k",
+                ],
+            )
+
+    def test_slurm_running_command_filters_current_user_running_jobs(self):
+        with mock.patch("getpass.getuser", return_value="alice"):
+            self.assertEqual(
+                slurm.build_slurm_running_command(),
+                [
+                    "squeue",
+                    "-u",
+                    "alice",
+                    "--states=RUNNING",
+                    "--noheader",
+                    "--format=%i|%P|%j|%u|%T|%M|%l|%m|%k",
+                ],
+            )
 
     def test_slurm_job_command_uses_sacct(self):
         self.assertEqual(
             slurm.build_slurm_job_command("12345"),
             [
                 "sacct",
-                "--format=JobID,NCPUS,Elapsed,CPUTime,ReqMem,maxrss",
+                "--parsable2",
+                "--noheader",
+                "--format=JobID,NCPUS,Elapsed,CPUTime,ReqMem,MaxRSS",
                 "--units=G",
                 "-j",
                 "12345",
             ],
         )
+
+    def test_info_nodes_command_uses_sinfo_node_format(self):
+        self.assertEqual(
+            slurm.build_info_nodes_command(),
+            [
+                "sinfo",
+                "-N",
+                "-o",
+                "%.20N %.10t %.6c %.10m %.20G",
+            ],
+        )
+
+    def test_info_partitions_command_uses_sinfo_partition_format(self):
+        self.assertEqual(
+            slurm.build_info_partitions_command(),
+            [
+                "sinfo",
+                "-o",
+                "%P %a %l %D %N",
+            ],
+        )
+
+    def test_system_node_status_command_uses_scontrol(self):
+        self.assertEqual(
+            slurm.build_system_node_status_command("node001"),
+            [
+                "scontrol",
+                "show",
+                "node",
+                "node001",
+            ],
+        )
+
+    def test_system_partition_status_command_uses_scontrol(self):
+        self.assertEqual(
+            slurm.build_system_partition_status_command("short"),
+            [
+                "scontrol",
+                "show",
+                "partition",
+                "short",
+            ],
+        )
+
+    def test_system_resources_command_uses_scontrol_nodes(self):
+        self.assertEqual(
+            slurm.build_system_resources_command(),
+            [
+                "scontrol",
+                "show",
+                "nodes",
+            ],
+        )
+
+    def test_empty_node_name_is_rejected(self):
+        with self.assertRaises(ValueError):
+            slurm.build_system_node_status_command("")
+
+    def test_empty_partition_name_is_rejected(self):
+        with self.assertRaises(ValueError):
+            slurm.build_system_partition_status_command("")
 
     def test_invalid_hours_are_rejected(self):
         with self.assertRaises(ValueError):

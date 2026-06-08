@@ -1,7 +1,18 @@
+.. _commands:
+
 Commands by Topic
 =================
 
-``mt`` groups commands by topic in the terminal help output. Run:
+This page is the command reference for ``mjolnirtools``. It follows the same
+topic grouping as the terminal help output so users can move between
+``mt help`` and the documentation without learning two different structures.
+
+Each command section explains when to use the command, shows the
+``mjolnirtools`` syntax, and then shows the underlying Slurm or shell command.
+This is intentional: ``mjolnirtools`` is a helper layer, not a replacement for
+learning the basic HPC tools.
+
+Run:
 
 .. code-block:: console
 
@@ -15,10 +26,22 @@ or:
 
 to see the same topic groups in the command line.
 
-Interactive sessions
+.. contents::
+   :local:
+   :depth: 1
+
+.. _commands-interactive:
+
+Interactive Sessions
 --------------------
 
-Use these commands when you need a shell running inside a Slurm allocation.
+Interactive sessions are for hands-on work on a compute node. Use them when you
+need a shell prompt with Slurm-managed CPUs and memory, for example while
+testing commands, inspecting data, compiling tools, or running a short analysis.
+
+For long or repeatable work, a batch job is usually better. ``mjolnirtools``
+does not hide this distinction: ``mt interactive`` is a shortcut for a normal
+``srun --pty bash`` allocation.
 
 ``mt interactive``
 ~~~~~~~~~~~~~~~~~~
@@ -59,10 +82,20 @@ Examples:
    $ mt interactive 4
    $ mt interactive 4 --cpus 8 --mem 16G
 
-File listing
+After the command starts, your shell is running inside the allocation. Type
+``exit`` when you are finished so Slurm can release the resources.
+
+.. _commands-files:
+
+File Listing
 ------------
 
-Use these commands to inspect files in the current directory.
+HPC projects often produce many input, output, log, and temporary files. The
+file listing commands are small shortcuts around ``ls`` for the views users
+need most often: name order, newest files first, or largest files first.
+
+These commands inspect the current directory only. They do not move, delete, or
+modify files.
 
 ``mt list``
 ~~~~~~~~~~~
@@ -95,7 +128,7 @@ Options:
 ``--des``
    Sort descending. ``--desc`` is also accepted.
 
-The command builds and runs:
+The command builds and runs one of:
 
 .. code-block:: console
 
@@ -113,10 +146,17 @@ Examples:
    $ mt list size
    $ mt list size --asc
 
-Screen sessions
+.. _commands-screen:
+
+Screen Sessions
 ---------------
 
-Use these commands to attach to, inspect, or stop GNU Screen sessions.
+GNU Screen keeps a terminal session alive after your network connection drops
+or your laptop sleeps. This is useful for login-node shell work such as editing,
+monitoring, or keeping notes open.
+
+Screen is not a scheduler. A screen session does not grant compute resources by
+itself. Use ``mt interactive`` or a Slurm batch job for compute-heavy work.
 
 ``mt screen``
 ~~~~~~~~~~~~~
@@ -148,10 +188,19 @@ Examples:
    $ mt screen list
    $ mt screen kill 12345.analysis
 
-Conda environments
+.. _commands-conda:
+
+Conda Environments
 ------------------
 
-Use these commands to create, remove, or inspect Conda environments.
+Conda environments isolate software packages for a project. This helps avoid
+mixing incompatible tool versions between analyses. ``mjolnirtools`` only wraps
+basic Conda environment management; package installation and environment design
+are still handled by Conda itself.
+
+Create small, named environments for projects or workflows. Remove old
+environments when they are no longer needed so your home or project storage
+does not fill up with unused packages.
 
 ``mt conda``
 ~~~~~~~~~~~~
@@ -183,16 +232,24 @@ Examples:
    $ mt conda remove analysis
    $ mt conda list
 
-Job monitoring
+.. _commands-jobs:
+
+Job Monitoring
 --------------
 
-Use these commands to inspect your current Slurm work.
+Job monitoring commands answer the first questions most Slurm users have:
+which jobs are mine, are they waiting or running, and what resources did a job
+use? The ``mt slurm`` commands present common ``squeue`` and ``sacct`` views as
+readable Rich tables.
+
+Use these commands from a login node. They inspect scheduler state; they do not
+start, cancel, or modify jobs.
 
 ``mt slurm``
 ~~~~~~~~~~~~
 
-List Slurm jobs for the current user. ``mt slurm`` is equivalent to
-``mt slurm list``.
+List Slurm jobs for the current user in a Rich table. ``mt slurm`` is
+equivalent to ``mt slurm list``.
 
 Usage:
 
@@ -205,12 +262,15 @@ The command uses the current username and runs:
 
 .. code-block:: console
 
-   $ squeue -u <current_user> --format="%.18i %.9P %.30j %.8u %.8T %.10M %.9l %.6m %k"
+   $ squeue -u <current_user> --noheader --format="%i|%P|%j|%u|%T|%M|%l|%m|%k"
+
+Useful columns include the job identifier, partition, job name, state, elapsed
+time, time limit, requested memory, and scheduler comment when available.
 
 ``mt slurm all``
 ~~~~~~~~~~~~~~~~
 
-List all Slurm jobs without filtering by user.
+List all Slurm jobs without filtering by user in a Rich table.
 
 Usage:
 
@@ -222,12 +282,56 @@ The command runs:
 
 .. code-block:: console
 
-   $ squeue --format="%.18i %.9P %.30j %.8u %.8T %.10M %.9l %.6m %k"
+   $ squeue --noheader --format="%i|%P|%j|%u|%T|%M|%l|%m|%k"
+
+This view is useful for understanding general cluster activity. It can be much
+longer than the default user-specific view.
+
+``mt slurm pending``
+~~~~~~~~~~~~~~~~~~~~
+
+List pending Slurm jobs for the current user in a Rich table.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt slurm pending
+
+The command uses the current username and runs:
+
+.. code-block:: console
+
+   $ squeue -u <current_user> --states=PENDING --noheader --format="%i|%P|%j|%u|%T|%M|%l|%m|%k"
+
+Pending jobs are waiting for Slurm to find a valid allocation. They may be
+waiting because resources are busy, because of priority, or because the request
+is too large for currently available nodes.
+
+``mt slurm running``
+~~~~~~~~~~~~~~~~~~~~
+
+List running Slurm jobs for the current user in a Rich table.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt slurm running
+
+The command uses the current username and runs:
+
+.. code-block:: console
+
+   $ squeue -u <current_user> --states=RUNNING --noheader --format="%i|%P|%j|%u|%T|%M|%l|%m|%k"
+
+Running jobs already have a Slurm allocation. Watch the elapsed time and time
+limit columns when deciding whether a job is close to its requested wall time.
 
 ``mt slurm <jobid>``
 ~~~~~~~~~~~~~~~~~~~~
 
-Show accounting details for a Slurm job.
+Show accounting details for a Slurm job in a Rich table.
 
 Usage:
 
@@ -239,12 +343,147 @@ The command runs:
 
 .. code-block:: console
 
-   $ sacct --format=JobID,NCPUS,Elapsed,CPUTime,ReqMem,maxrss --units=G -j 12345
+   $ sacct --parsable2 --noheader --format=JobID,NCPUS,Elapsed,CPUTime,ReqMem,MaxRSS --units=G -j 12345
 
-Information
------------
+Use this after a job has started or finished to inspect elapsed time, requested
+memory, and maximum resident memory when Slurm accounting reports it.
 
-Use these commands when you need help or version information.
+.. _commands-system:
+
+System Information
+------------------
+
+System information commands help users understand the cluster before choosing
+resources. They summarize CPU, GPU, memory, node, and partition status with
+readable tables.
+
+These commands are snapshots. Scheduler state can change quickly as jobs start
+and finish, so use them as guidance rather than as a guarantee that resources
+will still be free when you submit a job.
+
+``mt system resources``
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Show cluster CPU, GPU, and memory usage as three progress rows.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt system resources
+
+The command runs:
+
+.. code-block:: console
+
+   $ scontrol show nodes
+
+The table aggregates allocated and total resources across all nodes. CPU and
+memory usage come from ``CPUAlloc``/``CPUTot`` and ``AllocMem``/``RealMemory``.
+GPU usage comes from ``GresUsed``/``Gres`` when available, with Slurm TRES
+fields used as a fallback.
+
+``mt system nodes``
+~~~~~~~~~~~~~~~~~~~
+
+Show Slurm node status in a Rich table.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt system nodes
+
+The command runs:
+
+.. code-block:: console
+
+   $ sinfo -N -o "%.20N %.10t %.6c %.10m %.20G"
+
+The table keeps the first row for each node name, matching:
+
+.. code-block:: console
+
+   $ sinfo -N -o "%.20N %.10t %.6c %.10m %.20G" | awk 'NR==1 || !seen[$1]++'
+
+Use this view to see which nodes are idle, allocated, mixed, down, or drained,
+and to check whether generic resources such as GPUs are advertised.
+
+``mt system partitions``
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Show Slurm partition status in a Rich table.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt system partitions
+
+The command runs:
+
+.. code-block:: console
+
+   $ sinfo -o "%P %a %l %D %N"
+
+The table keeps the first row for each partition name, matching:
+
+.. code-block:: console
+
+   $ sinfo -o "%P %a %l %D %N" | awk 'NR==1 || !seen[$1]++'
+
+Partitions define where jobs can run and which limits apply. This view is a
+quick way to see available partitions, time limits, node counts, and node lists.
+
+``mt system node``
+~~~~~~~~~~~~~~~~~~
+
+Show detailed status information for a Slurm node in a Rich table.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt system node <nodename>
+
+The command runs:
+
+.. code-block:: console
+
+   $ scontrol show node <nodename>
+
+Use this when an administrator or support note refers to a specific node, or
+when you need a detailed view of one node's state and configured resources.
+
+``mt system partition``
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Show detailed status information for a Slurm partition in a Rich table.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt system partition <partitionname>
+
+The command runs:
+
+.. code-block:: console
+
+   $ scontrol show partition <partitionname>
+
+Use this to inspect one partition's configuration, including its state, nodes,
+time limits, and access-related fields reported by Slurm.
+
+.. _commands-help:
+
+Help and Version
+----------------
+
+Help and version commands are useful when checking that the expected
+``mjolnirtools`` installation is active. On shared systems, users may have
+multiple shell environments, so checking the version can make support
+conversations easier.
 
 ``mt version``
 ~~~~~~~~~~~~~~
