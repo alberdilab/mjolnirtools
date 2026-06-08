@@ -1,0 +1,11 @@
+#%Module1.0
+
+proc ModulesHelp { } {
+    puts stderr "mjolnirtools provides beginner-friendly Slurm shortcuts for the Mjolnir HPC cluster."
+    puts stderr "Commands include: mt interactive, mt slurm, mt list, mt screen, mt version, and mt help."
+}
+
+module-whatis "Beginner-friendly Slurm shortcuts for the Mjolnir HPC cluster"
+
+set root /opt/mjolnirtools/1.0.0
+prepend-path PATH $root/bin
