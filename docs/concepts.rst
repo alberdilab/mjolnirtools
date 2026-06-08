@@ -22,8 +22,8 @@ heavy analysis directly on a login node.
 
 Compute-heavy work should run on compute nodes. A compute node is assigned to
 you by Slurm after you request resources such as CPU cores, memory, GPUs, and
-wall time. ``mt interactive`` is the shortcut in ``mjolnirtools`` that asks
-Slurm for a compute-node shell.
+wall time. ``mt slurm interactive`` asks Slurm for a compute-node shell, and
+``mt interactive`` is available as a shortcut.
 
 Jobs and Allocations
 --------------------
@@ -59,8 +59,8 @@ Common resource terms:
    workloads. Not every partition or node has GPUs.
 
 ``Wall time``
-   The maximum elapsed time requested for the job. In ``mt interactive 4``, the
-   wall time is four hours.
+   The maximum elapsed time requested for the job. In
+   ``mt slurm interactive 4``, the wall time is four hours.
 
 Partitions and Nodes
 --------------------

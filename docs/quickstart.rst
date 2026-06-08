@@ -4,9 +4,9 @@ Quickstart
 ==========
 
 This page walks through a first ``mjolnirtools`` session for users who are new
-to Mjolnir or to Slurm-based HPC systems. The goal is to confirm that ``mt`` is
-available, start a small interactive allocation, check job status, and learn
-where to find more detailed command help.
+to Mjolnir or to Slurm-based HPC systems. The goal is to confirm that ``mt`` or
+``mjolnirtools`` is available, start a small interactive allocation, check job
+status, and learn where to find more detailed command help.
 
 The examples assume that you are working in a terminal on a Mjolnir login node
 and that the ``mjolnirtools`` module or package is already available. If not,
@@ -35,13 +35,16 @@ Start a four-hour interactive Slurm session with the default resources:
 
 .. code-block:: console
 
-   $ mt interactive 4
+   $ mt slurm interactive 4
 
 Start a four-hour interactive session with 8 CPUs and 16G memory:
 
 .. code-block:: console
 
-   $ mt interactive 4 --cpus 8 --mem 16G
+   $ mt slurm interactive 4 --cpus 8 --mem 16G
+
+The shorter ``mt interactive`` command is available as a shortcut for
+``mt slurm interactive``.
 
 .. note::
 
@@ -75,9 +78,18 @@ partitions, or node status before deciding what to request.
 
 .. code-block:: console
 
+   $ mt system
    $ mt system resources
    $ mt system partitions
    $ mt system nodes
+
+For a detailed view of one node or partition, these shortcuts are equivalent to
+the longer ``mt system`` commands:
+
+.. code-block:: console
+
+   $ mt node mjolnircomp01fl
+   $ mt partition <partitionname>
 
 Work with Files
 ---------------

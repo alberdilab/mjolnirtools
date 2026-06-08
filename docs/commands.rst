@@ -4,27 +4,28 @@ Commands by Topic
 =================
 
 This page is the command reference for ``mjolnirtools``. It follows the same
-topic grouping as the terminal help output so users can move between
-``mt help`` and the documentation without learning two different structures.
+topic grouping and command tree as the terminal help output so users can move
+between ``mt help`` and the documentation without learning two different
+structures.
 
 Each command section explains when to use the command, shows the
-``mjolnirtools`` syntax, and then shows the underlying Slurm or shell command.
-This is intentional: ``mjolnirtools`` is a helper layer, not a replacement for
-learning the basic HPC tools.
+``mjolnirtools`` syntax, and then shows the underlying Slurm, shell, screen, or
+Conda command where applicable. This is intentional: ``mjolnirtools`` is a
+helper layer, not a replacement for learning the basic HPC tools.
+
+The examples use ``mt`` for brevity. The full ``mjolnirtools`` command name can
+be used in the same places.
 
 Run:
 
 .. code-block:: console
 
-   $ mt --help
-
-or:
-
-.. code-block:: console
-
    $ mt help
 
-to see the same topic groups in the command line.
+to see the topic groups and first two command levels in the command line.
+
+Shortcuts shown in help are aliases for longer topic commands. They are listed
+with the topic they belong to rather than as separate command groups.
 
 .. contents::
    :local:
@@ -40,15 +41,21 @@ need a shell prompt with Slurm-managed CPUs and memory, for example while
 testing commands, inspecting data, compiling tools, or running a short analysis.
 
 For long or repeatable work, a batch job is usually better. ``mjolnirtools``
-does not hide this distinction: ``mt interactive`` is a shortcut for a normal
+does not hide this distinction: ``mt slurm interactive`` starts a normal
 ``srun --pty bash`` allocation.
 
-``mt interactive``
-~~~~~~~~~~~~~~~~~~
+``mt slurm interactive``
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 Start an interactive Slurm shell session.
 
 Usage:
+
+.. code-block:: console
+
+   $ mt slurm interactive <hours> [--cpus CPUS] [--mem MEM]
+
+Shortcut:
 
 .. code-block:: console
 
@@ -79,8 +86,9 @@ Examples:
 
 .. code-block:: console
 
+   $ mt slurm interactive 4
+   $ mt slurm interactive 4 --cpus 8 --mem 16G
    $ mt interactive 4
-   $ mt interactive 4 --cpus 8 --mem 16G
 
 After the command starts, your shell is running inside the allocation. Type
 ``exit`` when you are finished so Slurm can release the resources.
@@ -156,7 +164,8 @@ or your laptop sleeps. This is useful for login-node shell work such as editing,
 monitoring, or keeping notes open.
 
 Screen is not a scheduler. A screen session does not grant compute resources by
-itself. Use ``mt interactive`` or a Slurm batch job for compute-heavy work.
+itself. Use ``mt slurm interactive`` or a Slurm batch job for compute-heavy
+work.
 
 ``mt screen``
 ~~~~~~~~~~~~~
@@ -361,6 +370,28 @@ These commands are snapshots. Scheduler state can change quickly as jobs start
 and finish, so use them as guidance rather than as a guarantee that resources
 will still be free when you submit a job.
 
+``mt system``
+~~~~~~~~~~~~~
+
+Show a short Rich overview of CPU, GPU, and memory usage and availability,
+followed by the most relevant system subcommands.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt system
+
+The command runs:
+
+.. code-block:: console
+
+   $ scontrol show nodes
+
+Use this as the first stop when deciding whether the cluster has enough free
+resources for a new job, or when you need a reminder of the system inspection
+commands.
+
 ``mt system resources``
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -446,6 +477,12 @@ Usage:
 
    $ mt system node <nodename>
 
+Shortcut:
+
+.. code-block:: console
+
+   $ mt node <nodename>
+
 The command runs:
 
 .. code-block:: console
@@ -465,6 +502,12 @@ Usage:
 .. code-block:: console
 
    $ mt system partition <partitionname>
+
+Shortcut:
+
+.. code-block:: console
+
+   $ mt partition <partitionname>
 
 The command runs:
 
@@ -499,7 +542,8 @@ Usage:
 ``mt help``
 ~~~~~~~~~~~
 
-Show the main Rich/Typer help view, including command topic groups.
+Show the main Rich/Typer help view, including command topic groups and the
+first two command levels.
 
 Usage:
 

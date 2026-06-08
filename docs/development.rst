@@ -24,7 +24,7 @@ Slurm command construction and execution helpers live in
 Command construction is separate from execution so tests can verify behavior
 without calling ``srun`` or ``squeue``.
 
-The CLI uses Typer and Rich so ``mt --help`` can display commands grouped by
+The CLI uses Typer and Rich so ``mt help`` can display commands grouped by
 topic in readable help panels.
 
 Running tests

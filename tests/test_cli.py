@@ -1,7 +1,10 @@
 import io
+from pathlib import Path
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
+
+import typer
 
 from mjolnirtools import cli
 
@@ -25,13 +28,33 @@ class CliTests(unittest.TestCase):
             ]
         )
 
+    def test_slurm_interactive_dispatch_runs_constructed_command(self):
+        with mock.patch("mjolnirtools.cli.slurm.run_command", return_value=0) as run_command:
+            exit_code = cli.main(
+                ["slurm", "interactive", "4", "--cpus", "8", "--mem", "16G"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(
+            [
+                "srun",
+                "--nodes=1",
+                "--ntasks=1",
+                "--cpus-per-task=8",
+                "--mem=16G",
+                "--time=4:00:00",
+                "--pty",
+                "bash",
+            ]
+        )
+
     def test_invalid_hours_exit_during_argument_parsing(self):
         stderr = io.StringIO()
         with redirect_stderr(stderr):
             exit_code = cli.main(["interactive", "0"])
 
         self.assertEqual(exit_code, 2)
-        self.assertIn("Invalid value for 'HOURS'", stderr.getvalue())
+        self.assertIn("Invalid value for '[HOURS]'", stderr.getvalue())
 
     def test_invalid_cpus_exit_during_argument_parsing(self):
         stderr = io.StringIO()
@@ -156,6 +179,20 @@ class CliTests(unittest.TestCase):
         self.assertIn("Slurm Job 12345", table_output)
         self.assertIn("00:10:00", table_output)
 
+    def test_slurm_rejects_unsupported_target_without_traceback(self):
+        stderr = io.StringIO()
+        with mock.patch(
+            "mjolnirtools.cli.slurm.capture_command_output"
+        ) as capture_command_output:
+            with redirect_stderr(stderr):
+                exit_code = cli.main(["slurm", "queues"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("Usage: mt slurm", stderr.getvalue())
+        self.assertIn("mt slurm <jobid>", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        capture_command_output.assert_not_called()
+
     def test_version_returns_zero(self):
         stdout = io.StringIO()
         with redirect_stdout(stdout):
@@ -205,6 +242,16 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertIn("Use only one of --asc or --des", stderr.getvalue())
+
+    def test_list_rejects_unsupported_sort_without_traceback(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["list", "owner"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("Usage: mt list", stderr.getvalue())
+        self.assertIn("Sort must be one of: name, time, size", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_screen_dispatch_attaches_to_session(self):
         with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
@@ -314,6 +361,48 @@ class CliTests(unittest.TestCase):
         self.assertIn("25.0%", table_output)
         self.assertIn("192 / 768 GB", table_output)
 
+    def test_system_without_topic_prints_overview_and_relevant_commands(self):
+        scontrol_output = (
+            "NodeName=node001 Arch=x86_64 CoresPerSocket=32\n"
+            "   CPUAlloc=8 CPUEfctv=64 CPUTot=64 CPULoad=3.50\n"
+            "   RealMemory=524288 AllocMem=131072 FreeMem=390000\n"
+            "   Gres=gpu:a100:4 GresUsed=gpu:a100:1(IDX:0)\n"
+            "NodeName=node002 Arch=x86_64 CoresPerSocket=16\n"
+            "   CPUAlloc=24 CPUEfctv=32 CPUTot=32 CPULoad=10.20\n"
+            "   RealMemory=262144 AllocMem=65536 FreeMem=190000\n"
+            "   CfgTRES=cpu=32,mem=262144M,billing=32,gres/gpu=2\n"
+            "   AllocTRES=cpu=24,mem=65536M,gres/gpu=2\n"
+        )
+
+        stdout = io.StringIO()
+        with mock.patch(
+            "mjolnirtools.cli.slurm.capture_command_output",
+            return_value=(0, scontrol_output),
+        ) as capture_command_output:
+            with redirect_stdout(stdout):
+                exit_code = cli.main(["system"])
+
+        self.assertEqual(exit_code, 0)
+        capture_command_output.assert_called_once_with(
+            [
+                "scontrol",
+                "show",
+                "nodes",
+            ]
+        )
+
+        table_output = stdout.getvalue()
+        self.assertIn("System Overview", table_output)
+        self.assertIn("Available", table_output)
+        self.assertIn("64", table_output)
+        self.assertIn("576 GB", table_output)
+        self.assertIn("Relevant System Commands", table_output)
+        self.assertIn("mt system resources", table_output)
+        self.assertIn("mt system nodes", table_output)
+        self.assertIn("mt system partitions", table_output)
+        self.assertIn("mt node <name>", table_output)
+        self.assertIn("mt partition <name>", table_output)
+
     def test_system_resources_rejects_name(self):
         stderr = io.StringIO()
         with redirect_stderr(stderr):
@@ -419,6 +508,62 @@ class CliTests(unittest.TestCase):
         self.assertIn("State", table_output)
         self.assertIn("MIXED", table_output)
 
+    def test_node_shortcut_dispatches_system_node(self):
+        scontrol_output = (
+            "NodeName=mjolnircomp01fl Arch=x86_64 CoresPerSocket=32\n"
+            "   State=IDLE ThreadsPerCore=1 RealMemory=515000\n"
+        )
+
+        stdout = io.StringIO()
+        with mock.patch(
+            "mjolnirtools.cli.slurm.capture_command_output",
+            return_value=(0, scontrol_output),
+        ) as capture_command_output:
+            with redirect_stdout(stdout):
+                exit_code = cli.main(["node", "mjolnircomp01fl"])
+
+        self.assertEqual(exit_code, 0)
+        capture_command_output.assert_called_once_with(
+            [
+                "scontrol",
+                "show",
+                "node",
+                "mjolnircomp01fl",
+            ]
+        )
+
+        table_output = stdout.getvalue()
+        self.assertIn("Slurm Node mjolnircomp01fl", table_output)
+        self.assertIn("NodeName", table_output)
+
+    def test_partition_shortcut_dispatches_system_partition(self):
+        scontrol_output = (
+            "PartitionName=short AllowGroups=ALL AllowAccounts=ALL\n"
+            "   State=UP TotalNodes=4 TotalCPUs=256 MaxTime=12:00:00\n"
+        )
+
+        stdout = io.StringIO()
+        with mock.patch(
+            "mjolnirtools.cli.slurm.capture_command_output",
+            return_value=(0, scontrol_output),
+        ) as capture_command_output:
+            with redirect_stdout(stdout):
+                exit_code = cli.main(["partition", "short"])
+
+        self.assertEqual(exit_code, 0)
+        capture_command_output.assert_called_once_with(
+            [
+                "scontrol",
+                "show",
+                "partition",
+                "short",
+            ]
+        )
+
+        table_output = stdout.getvalue()
+        self.assertIn("Slurm Partition short", table_output)
+        self.assertIn("PartitionName", table_output)
+
     def test_system_partition_prints_detailed_status_table(self):
         scontrol_output = (
             "PartitionName=short AllowGroups=ALL AllowAccounts=ALL\n"
@@ -484,7 +629,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertIn(
-            "Use one of: mt system resources, mt system nodes, "
+            "Use one of: mt system, mt system resources, mt system nodes, "
             "mt system partitions, mt system node <name>, "
             "mt system partition <name>",
             stderr.getvalue(),
@@ -493,15 +638,103 @@ class CliTests(unittest.TestCase):
     def test_help_groups_commands_by_topic(self):
         stdout = io.StringIO()
         with redirect_stdout(stdout):
-            self.assertEqual(cli.main(["--help"]), 0)
+            self.assertEqual(cli.main(["help"]), 0)
 
         help_text = stdout.getvalue()
-        self.assertIn("Interactive sessions", help_text)
+        self.assertNotIn("--help", help_text)
         self.assertIn("File listing", help_text)
         self.assertIn("Job monitoring", help_text)
         self.assertIn("Screen sessions", help_text)
         self.assertIn("Conda environments", help_text)
+        self.assertIn("System", help_text)
         self.assertIn("Information", help_text)
+        self.assertLess(help_text.index("System"), help_text.index("Information"))
+        self.assertEqual(help_text.count("│ system"), 1)
+
+    def test_unknown_command_reports_click_error_without_traceback(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["queues"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("No such command 'queues'", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_help_shows_first_two_command_levels(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            self.assertEqual(cli.main(["help"]), 0)
+
+        help_text = stdout.getvalue()
+        self.assertIn("Command tree:", help_text)
+        self.assertIn("mt slurm interactive <hours>", help_text)
+        self.assertIn("mt slurm list", help_text)
+        self.assertIn("mt slurm pending", help_text)
+        self.assertIn("mt screen kill <screenid>", help_text)
+        self.assertIn("mt conda create <name>", help_text)
+        self.assertIn("mt system", help_text)
+        self.assertIn("mt system resources", help_text)
+        self.assertIn("mt system partition <name>", help_text)
+
+    def test_help_displays_shortcuts_without_registering_them_as_commands(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            self.assertEqual(cli.main(["help"]), 0)
+
+        help_text = stdout.getvalue()
+        self.assertIn("Shortcuts:", help_text)
+        self.assertIn("mt interactive <hours>", help_text)
+        self.assertIn("mt node <name>", help_text)
+        self.assertIn("mt partition <name>", help_text)
+
+        command = typer.main.get_command(cli.app)
+        self.assertNotIn("interactive", command.commands)
+        self.assertNotIn("node", command.commands)
+        self.assertNotIn("partition", command.commands)
+        self.assertIn("system", command.commands)
+
+    def test_mjolnirtools_console_script_is_registered(self):
+        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+
+        self.assertIn(
+            'mjolnirtools = "mjolnirtools.cli:main"',
+            pyproject_path.read_text(),
+        )
+
+    def test_mjolnirtools_prog_name_is_supported(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            self.assertEqual(cli.main(["help"], prog_name="mjolnirtools"), 0)
+
+        self.assertIn("Usage: mjolnirtools", stdout.getvalue())
+
+    def test_help_option_is_not_registered(self):
+        command = typer.main.get_command(cli.app)
+        self.assertFalse(command.add_help_option)
+        for subcommand in command.commands.values():
+            self.assertFalse(subcommand.add_help_option)
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["--help"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("No such option: --help", stderr.getvalue())
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["slurm", "--help"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("No such option: --help", stderr.getvalue())
+
+    def test_mjolnirtools_help_command_uses_prog_name(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            self.assertEqual(cli.main(["help"], prog_name="mjolnirtools"), 0)
+
+        self.assertIn("Usage: mjolnirtools", stdout.getvalue())
+        self.assertIn("mt system resources", stdout.getvalue())
 
     def test_no_args_shows_help(self):
         stdout = io.StringIO()
@@ -510,7 +743,7 @@ class CliTests(unittest.TestCase):
 
         help_text = stdout.getvalue()
         self.assertIn("Usage:", help_text)
-        self.assertIn("Interactive sessions", help_text)
+        self.assertIn("Job monitoring", help_text)
         self.assertIn("Information", help_text)
 
 

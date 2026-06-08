@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Annotated
 
 import click
@@ -23,17 +24,73 @@ SlurmJobRow = tuple[str, str, str, str, str, str, str, str, str]
 SlurmAccountingRow = tuple[str, str, str, str, str, str]
 ResourceUsageRow = tuple[str, int, int, str]
 
+COMMAND_TREE_LINES = [
+    "Command tree:",
+    "  mt list",
+    "  mt slurm interactive <hours>",
+    "  mt slurm list",
+    "  mt slurm all",
+    "  mt slurm pending",
+    "  mt slurm running",
+    "  mt slurm <jobid>",
+    "  mt screen list",
+    "  mt screen kill <screenid>",
+    "  mt screen <screenid>",
+    "  mt conda create <name>",
+    "  mt conda remove <name>",
+    "  mt conda list",
+    "  mt system",
+    "  mt system resources",
+    "  mt system nodes",
+    "  mt system partitions",
+    "  mt system node <name>",
+    "  mt system partition <name>",
+    "  mt version",
+    "  mt help",
+    "",
+    "Shortcuts:",
+    "  mt interactive <hours> = mt slurm interactive <hours>",
+    "  mt node <name> = mt system node <name>",
+    "  mt partition <name> = mt system partition <name>",
+]
+
 
 app = typer.Typer(
     add_completion=False,
-    context_settings={"help_option_names": ["-h", "--help"]},
+    add_help_option=False,
     help=(
-        "Beginner-friendly Slurm shortcuts for the Mjolnir HPC cluster. "
-        "Commands are grouped by topic."
+        "Beginner-friendly shortcuts for common Mjolnir HPC workflows, "
+        "including jobs, files, screen sessions, Conda environments, and "
+        "cluster status."
     ),
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
+
+SYSTEM_SHORTCUTS = {
+    "interactive": ("slurm", "interactive"),
+    "node": ("system", "node"),
+    "partition": ("system", "partition"),
+}
+SLURM_JOB_ID_PATTERN = re.compile(r"^\d+(?:[._][A-Za-z0-9_-]+)?$")
+
+
+def normalize_shortcuts(args: Sequence[str]) -> list[str]:
+    """Expand top-level convenience shortcuts into their topic commands."""
+    normalized_args = list(args)
+    if not normalized_args:
+        return normalized_args
+
+    replacement = SYSTEM_SHORTCUTS.get(normalized_args[0])
+    if replacement is None:
+        return normalized_args
+
+    return [*replacement, *normalized_args[1:]]
+
+
+def is_slurm_job_id(value: str) -> bool:
+    """Return whether *value* looks like a Slurm job or job-step id."""
+    return bool(SLURM_JOB_ID_PATTERN.fullmatch(value.strip()))
 
 
 def validate_memory(value: str) -> str:
@@ -374,38 +431,43 @@ def print_system_resources_table(rows: list[ResourceUsageRow]) -> None:
     Console().print(table)
 
 
-@app.command(
-    rich_help_panel="Interactive sessions",
-    help="Start an interactive Slurm shell session.",
-)
-def interactive(
-    hours: Annotated[
-        int,
-        typer.Argument(
-            min=1,
-            help="Session length in hours, for example 4.",
-            show_default=False,
-        ),
-    ],
-    cpus: Annotated[
-        int,
-        typer.Option(
-            "--cpus",
-            min=1,
-            help="CPUs for the session.",
-            rich_help_panel="Resource requests",
-        ),
-    ] = 4,
-    mem: Annotated[
-        str,
-        typer.Option(
-            "--mem",
-            callback=validate_memory,
-            help="Memory for the session, for example 8G or 16G.",
-            rich_help_panel="Resource requests",
-        ),
-    ] = "8G",
-) -> None:
+def print_system_overview(rows: list[ResourceUsageRow]) -> None:
+    """Print a compact system overview and relevant follow-up commands."""
+    console = Console()
+    table = Table(title="System Overview", show_lines=False)
+    table.add_column("Resource", no_wrap=True)
+    table.add_column("Usage")
+    table.add_column("Used", justify="right", no_wrap=True)
+    table.add_column("Available", justify="right", no_wrap=True)
+    table.add_column("Total", justify="right", no_wrap=True)
+
+    for resource, used, total, unit in rows:
+        available = max(total - used, 0)
+        percent = (used / total * 100) if total else 0
+        completed = max(0, min(percent, 100))
+        suffix = " GB" if unit == "memory_mb" else ""
+        table.add_row(
+            resource,
+            ProgressBar(total=100, completed=completed, width=20),
+            f"{format_resource_amount(used, unit)}{suffix}",
+            f"{format_resource_amount(available, unit)}{suffix}",
+            f"{format_resource_amount(total, unit)}{suffix}",
+        )
+
+    commands = Table(title="Relevant System Commands", show_header=False)
+    commands.add_column("Command", no_wrap=True)
+    commands.add_column("Use")
+    commands.add_row("mt system resources", "Show the full resource usage view.")
+    commands.add_row("mt system nodes", "List node states, CPUs, memory, and GRES.")
+    commands.add_row("mt system partitions", "List partitions, time limits, and nodes.")
+    commands.add_row("mt node <name>", "Inspect one node in detail.")
+    commands.add_row("mt partition <name>", "Inspect one partition in detail.")
+
+    console.print(table)
+    console.print(commands)
+
+
+def run_interactive_session(hours: int, cpus: int, mem: str) -> None:
     """Run the interactive Slurm session command."""
     command = slurm.build_interactive_command(hours=hours, cpus=cpus, mem=mem)
     raise typer.Exit(slurm.run_command(command))
@@ -413,6 +475,7 @@ def interactive(
 
 @app.command(
     name="slurm",
+    add_help_option=False,
     rich_help_panel="Job monitoring",
     help="List Slurm jobs or inspect a Slurm job id.",
 )
@@ -421,14 +484,47 @@ def slurm_command(
         str,
         typer.Argument(
             help=(
-                "Use 'list', 'all', 'pending', or 'running', or pass a job id."
+                "Use 'interactive', 'list', 'all', 'pending', or 'running', "
+                "or pass a job id."
             ),
             show_default=False,
         ),
     ] = "list",
+    hours: Annotated[
+        int | None,
+        typer.Argument(
+            min=1,
+            help="Session length in hours for 'interactive', for example 4.",
+            show_default=False,
+        ),
+    ] = None,
+    cpus: Annotated[
+        int,
+        typer.Option(
+            "--cpus",
+            min=1,
+            help="CPUs for an interactive session.",
+            rich_help_panel="Interactive resource requests",
+        ),
+    ] = 4,
+    mem: Annotated[
+        str,
+        typer.Option(
+            "--mem",
+            callback=validate_memory,
+            help="Memory for an interactive session, for example 8G or 16G.",
+            rich_help_panel="Interactive resource requests",
+        ),
+    ] = "8G",
 ) -> None:
     """Run Slurm monitoring commands."""
-    if target == "list":
+    if target == "interactive":
+        if hours is None:
+            raise click.UsageError("mt slurm interactive requires hours.")
+        run_interactive_session(hours=hours, cpus=cpus, mem=mem)
+    elif hours is not None:
+        raise click.UsageError(f"mt slurm {target} does not accept hours.")
+    elif target == "list":
         command = slurm.build_slurm_list_command()
         title = "Slurm Jobs"
         table_kind = "queue"
@@ -445,6 +541,12 @@ def slurm_command(
         title = "Running Slurm Jobs"
         table_kind = "queue"
     else:
+        if not is_slurm_job_id(target):
+            raise click.UsageError(
+                "Use one of: mt slurm interactive <hours>, mt slurm list, "
+                "mt slurm all, mt slurm pending, mt slurm running, "
+                "mt slurm <jobid>."
+            )
         command = slurm.build_slurm_job_command(target)
         title = target
         table_kind = "accounting"
@@ -461,6 +563,7 @@ def slurm_command(
 
 @app.command(
     name="list",
+    add_help_option=False,
     rich_help_panel="File listing",
     help="List files in the current directory.",
 )
@@ -493,6 +596,8 @@ def list_command(
     """Run the command that lists local files."""
     if asc and des:
         raise click.UsageError("Use only one of --asc or --des.")
+    if sort_by.lower() not in shell.VALID_LIST_SORTS:
+        raise click.UsageError("Sort must be one of: name, time, size.")
 
     order = "asc" if asc else "des" if des else None
     command = shell.build_list_command(sort_by=sort_by, order=order)
@@ -501,6 +606,7 @@ def list_command(
 
 @app.command(
     name="screen",
+    add_help_option=False,
     rich_help_panel="Screen sessions",
     help="Attach to, list, or kill screen sessions.",
 )
@@ -541,6 +647,7 @@ def screen_command(
 
 @app.command(
     name="conda",
+    add_help_option=False,
     rich_help_panel="Conda environments",
     help="Create, remove, or list Conda environments.",
 )
@@ -581,19 +688,20 @@ def conda_command(
 
 @app.command(
     name="system",
-    rich_help_panel="Information",
+    add_help_option=False,
+    rich_help_panel="System",
     help="Show cluster system information.",
 )
 def system_command(
     topic: Annotated[
-        str,
+        str | None,
         typer.Argument(
             help=(
                 "System topic: resources, nodes, partitions, node, or partition."
             ),
             show_default=False,
         ),
-    ],
+    ] = None,
     name: Annotated[
         str | None,
         typer.Argument(
@@ -603,7 +711,9 @@ def system_command(
     ] = None,
 ) -> None:
     """Run a cluster information command."""
-    if topic == "resources":
+    if topic is None:
+        command = slurm.build_system_resources_command()
+    elif topic == "resources":
         if name is not None:
             raise click.UsageError("mt system resources does not accept a name.")
         command = slurm.build_system_resources_command()
@@ -627,7 +737,7 @@ def system_command(
         command = slurm.build_system_partition_status_command(name)
     else:
         raise click.UsageError(
-            "Use one of: mt system resources, mt system nodes, "
+            "Use one of: mt system, mt system resources, mt system nodes, "
             "mt system partitions, mt system node <name>, "
             "mt system partition <name>."
         )
@@ -636,7 +746,9 @@ def system_command(
     if exit_code != 0:
         raise typer.Exit(exit_code)
 
-    if topic == "resources":
+    if topic is None:
+        print_system_overview(parse_system_resources_output(output))
+    elif topic == "resources":
         print_system_resources_table(parse_system_resources_output(output))
     elif topic == "nodes":
         print_node_info_table(parse_node_info_output(output))
@@ -650,6 +762,7 @@ def system_command(
 
 @app.command(
     name="version",
+    add_help_option=False,
     rich_help_panel="Information",
     help="Print the mjolnirtools version.",
 )
@@ -658,30 +771,40 @@ def version_command() -> None:
     typer.echo(f"mjolnirtools {__version__}")
 
 
+def show_main_help(prog_name: str) -> int:
+    """Show top-level help followed by the two-level command tree."""
+    command = typer.main.get_command(app)
+    context = click.Context(command, info_name=prog_name)
+    typer.echo(command.get_help(context))
+    typer.echo()
+    typer.echo("\n".join(COMMAND_TREE_LINES))
+    return 0
+
+
 @app.command(
     name="help",
+    add_help_option=False,
     rich_help_panel="Information",
     help="Show the main help message.",
 )
-def help_command() -> None:
+def help_command(ctx: typer.Context) -> None:
     """Show the top-level Typer/Rich help view."""
-    command = typer.main.get_command(app)
-    try:
-        command.main(args=["--help"], prog_name="mt", standalone_mode=False)
-    except click.exceptions.Exit as exc:
-        raise typer.Exit(exc.exit_code) from exc
+    prog_name = ctx.find_root().info_name or "mt"
+    raise typer.Exit(show_main_help(prog_name))
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, prog_name: str | None = None) -> int:
     """Program entry point for the ``mt`` command."""
     args = list(argv) if argv is not None else sys.argv[1:]
+    display_name = prog_name or ("mt" if argv is not None else Path(sys.argv[0]).name)
     if not args:
-        args = ["--help"]
+        return show_main_help(display_name)
+    args = normalize_shortcuts(args)
 
     try:
         app(
             args=args,
-            prog_name="mt",
+            prog_name=display_name,
             standalone_mode=False,
         )
     except click.ClickException as exc:

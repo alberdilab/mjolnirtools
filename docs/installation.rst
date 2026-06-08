@@ -27,12 +27,15 @@ cluster-wide deployment. From the repository root, install the package with
 
    $ python3 -m pip install .
 
-After installation, the ``mt`` command should be available:
+After installation, the ``mt`` and ``mjolnirtools`` commands should be
+available:
 
 .. code-block:: console
 
    $ mt version
-   mjolnirtools 1.0.1
+   mjolnirtools 1.0.2
+   $ mjolnirtools version
+   mjolnirtools 1.0.2
 
 For development, use an editable install:
 
@@ -45,7 +48,8 @@ Environment modules
 
 Environment modules are the normal way to expose shared software on HPC
 systems. Loading a module adjusts environment variables such as ``PATH`` so the
-``mt`` command can be found without every user installing their own copy.
+``mt`` and ``mjolnirtools`` commands can be found without every user installing
+their own copy.
 
 Mjolnir administrators will eventually install this package under a shared
 prefix such as:
@@ -69,9 +73,10 @@ and run:
 Slurm availability
 ------------------
 
-The ``interactive``, ``slurm``, and ``system`` commands call Slurm tools. If
-those tools are not available, ``mjolnirtools`` prints a short error message
-explaining that Slurm commands are missing from the current environment.
+The ``slurm`` and ``system`` commands call Slurm tools, including the
+``mt interactive`` shortcut for ``mt slurm interactive``. If those tools are not
+available, ``mjolnirtools`` prints a short error message explaining that Slurm
+commands are missing from the current environment.
 
 This usually means one of three things:
 

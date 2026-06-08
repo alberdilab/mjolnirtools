@@ -2,6 +2,23 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.0.2 - 2026-06-08
+
+### Added
+
+- `mjolnirtools` as a console-script synonym for `mt`.
+- `mt system` overview with resource availability and relevant system
+  subcommands.
+- `mt node <name>` and `mt partition <name>` shortcuts for the corresponding
+  `mt system node <name>` and `mt system partition <name>` commands.
+- `mt slurm interactive <hours>` as the primary interactive-session command,
+  with `mt interactive <hours>` kept as a shortcut.
+
+### Changed
+
+- Remove `mt interactive` from the primary help command list and show it only
+  as a shortcut.
+
 ## 1.0.1 - 2026-06-08
 
 ### Added

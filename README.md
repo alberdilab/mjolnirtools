@@ -1,14 +1,15 @@
 # mjolnirtools
 
 `mjolnirtools` is a small command-line utility for users of the Mjolnir HPC
-cluster. It provides beginner-friendly shortcuts for common Slurm tasks while
-keeping the underlying commands visible and predictable.
+cluster. It provides beginner-friendly shortcuts for common HPC workflows,
+including jobs, files, screen sessions, Conda environments, and cluster status,
+while keeping the underlying commands visible and predictable.
 
-This project is a convenience wrapper around Slurm commands. It is not a
-replacement for Slurm, and advanced users can still run `srun`, `squeue`, and
-other Slurm tools directly.
+This project is a helper layer around common cluster commands. It is not a
+replacement for Slurm, shell, screen, or Conda tools, and advanced users can
+still run those tools directly.
 
-The command is abbreviated as `mt`.
+The command can be run as `mt` or `mjolnirtools`.
 
 ## Documentation
 
@@ -24,10 +25,11 @@ From the repository root:
 python3 -m pip install .
 ```
 
-After installation, the `mt` command should be available:
+After installation, the `mt` and `mjolnirtools` commands should be available:
 
 ```sh
 mt version
+mjolnirtools version
 ```
 
 For editable development installs:
