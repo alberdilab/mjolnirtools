@@ -6,7 +6,7 @@ from unittest import mock
 
 import typer
 
-from mjolnirtools import cli
+from mjolnirtools import __version__, cli
 
 
 class CliTests(unittest.TestCase):
@@ -198,7 +198,7 @@ class CliTests(unittest.TestCase):
         with redirect_stdout(stdout):
             self.assertEqual(cli.main(["version"]), 0)
 
-        self.assertEqual(stdout.getvalue(), "mjolnirtools 1.0.1\n")
+        self.assertEqual(stdout.getvalue(), f"mjolnirtools {__version__}\n")
 
     def test_list_dispatch_runs_default_listing(self):
         with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
@@ -660,21 +660,41 @@ class CliTests(unittest.TestCase):
         self.assertIn("No such command 'queues'", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
 
-    def test_help_shows_first_two_command_levels(self):
+    def test_main_help_does_not_show_command_tree(self):
         stdout = io.StringIO()
         with redirect_stdout(stdout):
             self.assertEqual(cli.main(["help"]), 0)
+            self.assertEqual(cli.main([]), 0)
 
         help_text = stdout.getvalue()
-        self.assertIn("Command tree:", help_text)
+        self.assertNotIn("Command tree:", help_text)
+        self.assertNotIn("Subcommands:", help_text)
+        self.assertNotIn("mt slurm pending", help_text)
+        self.assertNotIn("mt screen kill <screenid>", help_text)
+        self.assertNotIn("mt conda create <name>", help_text)
+        self.assertNotIn("mt system resources", help_text)
+        self.assertIn("Shortcuts:", help_text)
+
+    def test_topic_help_shows_its_own_subcommands(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            self.assertEqual(cli.main(["slurm", "--help"]), 0)
+            self.assertEqual(cli.main(["screen", "--help"]), 0)
+            self.assertEqual(cli.main(["conda", "--help"]), 0)
+            self.assertEqual(cli.main(["system", "--help"]), 0)
+            self.assertEqual(cli.main(["list", "--help"]), 0)
+
+        help_text = stdout.getvalue()
+        self.assertIn("Usage: mt slurm", help_text)
+        self.assertIn("Subcommands:", help_text)
         self.assertIn("mt slurm interactive <hours>", help_text)
         self.assertIn("mt slurm list", help_text)
         self.assertIn("mt slurm pending", help_text)
         self.assertIn("mt screen kill <screenid>", help_text)
         self.assertIn("mt conda create <name>", help_text)
-        self.assertIn("mt system", help_text)
         self.assertIn("mt system resources", help_text)
         self.assertIn("mt system partition <name>", help_text)
+        self.assertIn("Usage: mt list", help_text)
 
     def test_help_displays_shortcuts_without_registering_them_as_commands(self):
         stdout = io.StringIO()
@@ -708,11 +728,9 @@ class CliTests(unittest.TestCase):
 
         self.assertIn("Usage: mjolnirtools", stdout.getvalue())
 
-    def test_help_option_is_not_registered(self):
+    def test_main_help_option_is_not_registered_but_topic_help_is(self):
         command = typer.main.get_command(cli.app)
         self.assertFalse(command.add_help_option)
-        for subcommand in command.commands.values():
-            self.assertFalse(subcommand.add_help_option)
 
         stderr = io.StringIO()
         with redirect_stderr(stderr):
@@ -721,12 +739,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertIn("No such option: --help", stderr.getvalue())
 
-        stderr = io.StringIO()
-        with redirect_stderr(stderr):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
             exit_code = cli.main(["slurm", "--help"])
 
-        self.assertEqual(exit_code, 2)
-        self.assertIn("No such option: --help", stderr.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Usage: mt slurm", stdout.getvalue())
 
     def test_mjolnirtools_help_command_uses_prog_name(self):
         stdout = io.StringIO()
@@ -734,7 +752,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(cli.main(["help"], prog_name="mjolnirtools"), 0)
 
         self.assertIn("Usage: mjolnirtools", stdout.getvalue())
-        self.assertIn("mt system resources", stdout.getvalue())
+        self.assertIn("mt node <name> = mt system node <name>", stdout.getvalue())
 
     def test_no_args_shows_help(self):
         stdout = io.StringIO()

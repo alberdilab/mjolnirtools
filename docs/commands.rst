@@ -4,9 +4,9 @@ Commands by Topic
 =================
 
 This page is the command reference for ``mjolnirtools``. It follows the same
-topic grouping and command tree as the terminal help output so users can move
-between ``mt help`` and the documentation without learning two different
-structures.
+topic grouping as the terminal help output (``mt help``, and ``mt <topic>
+--help`` for each topic's subcommands) so users can move between the terminal
+and the documentation without learning two different structures.
 
 Each command section explains when to use the command, shows the
 ``mjolnirtools`` syntax, and then shows the underlying Slurm, shell, screen, or

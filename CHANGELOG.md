@@ -2,6 +2,15 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.0.3 - 2026-06-08
+
+### Changed
+
+- Replace the flat command tree in `mt help`/`mt` with per-topic subcommand
+  lists shown by `mt <topic> --help` (for example `mt slurm --help` or
+  `mt system --help`), keeping the main help focused on topic groups and
+  shortcuts.
+
 ## 1.0.2 - 2026-06-08
 
 ### Added

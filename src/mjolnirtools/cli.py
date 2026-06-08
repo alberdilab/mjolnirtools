@@ -24,30 +24,40 @@ SlurmJobRow = tuple[str, str, str, str, str, str, str, str, str]
 SlurmAccountingRow = tuple[str, str, str, str, str, str]
 ResourceUsageRow = tuple[str, int, int, str]
 
-COMMAND_TREE_LINES = [
-    "Command tree:",
-    "  mt list",
-    "  mt slurm interactive <hours>",
-    "  mt slurm list",
-    "  mt slurm all",
-    "  mt slurm pending",
-    "  mt slurm running",
-    "  mt slurm <jobid>",
-    "  mt screen list",
-    "  mt screen kill <screenid>",
-    "  mt screen <screenid>",
-    "  mt conda create <name>",
-    "  mt conda remove <name>",
-    "  mt conda list",
-    "  mt system",
-    "  mt system resources",
-    "  mt system nodes",
-    "  mt system partitions",
-    "  mt system node <name>",
-    "  mt system partition <name>",
-    "  mt version",
-    "  mt help",
-    "",
+SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
+    "slurm": [
+        "Subcommands:",
+        "  mt slurm interactive <hours>",
+        "  mt slurm list",
+        "  mt slurm all",
+        "  mt slurm pending",
+        "  mt slurm running",
+        "  mt slurm <jobid>",
+    ],
+    "screen": [
+        "Subcommands:",
+        "  mt screen list",
+        "  mt screen kill <screenid>",
+        "  mt screen <screenid>",
+    ],
+    "conda": [
+        "Subcommands:",
+        "  mt conda create <name>",
+        "  mt conda remove <name>",
+        "  mt conda list",
+    ],
+    "system": [
+        "Subcommands:",
+        "  mt system",
+        "  mt system resources",
+        "  mt system nodes",
+        "  mt system partitions",
+        "  mt system node <name>",
+        "  mt system partition <name>",
+    ],
+}
+
+SHORTCUT_LINES = [
     "Shortcuts:",
     "  mt interactive <hours> = mt slurm interactive <hours>",
     "  mt node <name> = mt system node <name>",
@@ -772,12 +782,26 @@ def version_command() -> None:
 
 
 def show_main_help(prog_name: str) -> int:
-    """Show top-level help followed by the two-level command tree."""
+    """Show top-level help followed by the shortcut aliases."""
     command = typer.main.get_command(app)
     context = click.Context(command, info_name=prog_name)
     typer.echo(command.get_help(context))
     typer.echo()
-    typer.echo("\n".join(COMMAND_TREE_LINES))
+    typer.echo("\n".join(SHORTCUT_LINES))
+    return 0
+
+
+def show_subcommand_help(name: str, prog_name: str) -> int:
+    """Show a topic command's help followed by its own subcommand list."""
+    command = typer.main.get_command(app)
+    subcommand = command.commands[name]
+    parent_context = click.Context(command, info_name=prog_name)
+    context = click.Context(subcommand, info_name=name, parent=parent_context)
+    typer.echo(subcommand.get_help(context))
+    tree_lines = SUBCOMMAND_TREE_LINES.get(name)
+    if tree_lines:
+        typer.echo()
+        typer.echo("\n".join(tree_lines))
     return 0
 
 
@@ -800,6 +824,14 @@ def main(argv: Sequence[str] | None = None, prog_name: str | None = None) -> int
     if not args:
         return show_main_help(display_name)
     args = normalize_shortcuts(args)
+
+    command = typer.main.get_command(app)
+    if (
+        len(args) > 1
+        and args[0] in command.commands
+        and "--help" in args[1:]
+    ):
+        return show_subcommand_help(args[0], display_name)
 
     try:
         app(

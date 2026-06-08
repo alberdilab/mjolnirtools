@@ -33,9 +33,9 @@ available:
 .. code-block:: console
 
    $ mt version
-   mjolnirtools 1.0.2
+   mjolnirtools 1.0.3
    $ mjolnirtools version
-   mjolnirtools 1.0.2
+   mjolnirtools 1.0.3
 
 For development, use an editable install:
 
