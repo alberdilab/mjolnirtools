@@ -649,7 +649,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("System", help_text)
         self.assertIn("Information", help_text)
         self.assertLess(help_text.index("System"), help_text.index("Information"))
-        self.assertEqual(help_text.count("│ system"), 1)
+        self.assertEqual(help_text.count("mt system resources"), 1)
 
     def test_unknown_command_reports_click_error_without_traceback(self):
         stderr = io.StringIO()
@@ -660,7 +660,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("No such command 'queues'", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
 
-    def test_main_help_does_not_show_command_tree(self):
+    def test_main_help_shows_subcommand_tree(self):
         stdout = io.StringIO()
         with redirect_stdout(stdout):
             self.assertEqual(cli.main(["help"]), 0)
@@ -669,10 +669,10 @@ class CliTests(unittest.TestCase):
         help_text = stdout.getvalue()
         self.assertNotIn("Command tree:", help_text)
         self.assertNotIn("Subcommands:", help_text)
-        self.assertNotIn("mt slurm pending", help_text)
-        self.assertNotIn("mt screen kill <screenid>", help_text)
-        self.assertNotIn("mt conda create <name>", help_text)
-        self.assertNotIn("mt system resources", help_text)
+        self.assertIn("mt slurm pending", help_text)
+        self.assertIn("mt screen kill <screenid>", help_text)
+        self.assertIn("mt conda create <name>", help_text)
+        self.assertIn("mt system resources", help_text)
         self.assertIn("Shortcuts:", help_text)
 
     def test_topic_help_shows_its_own_subcommands(self):
@@ -763,6 +763,153 @@ class CliTests(unittest.TestCase):
         self.assertIn("Usage:", help_text)
         self.assertIn("Job monitoring", help_text)
         self.assertIn("Information", help_text)
+
+
+    def test_permissions_exec_non_recursive_makes_path_executable(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["permissions", "exec", "script.sh", "--non-recursive"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["chmod", "+x", "script.sh"])
+
+    def test_permissions_exec_recursive_uses_find(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["permissions", "exec", "scripts/"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(
+            ["find", "scripts/", "-exec", "chmod", "+x", "{}", "+"]
+        )
+
+    def test_permissions_exec_defaults_to_current_directory(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["permissions", "exec"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["find", ".", "-exec", "chmod", "+x", "{}", "+"])
+
+    def test_permissions_open_non_recursive_on_directory_uses_755(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["permissions", "open", ".", "--non-recursive"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["chmod", "755", "."])
+
+    def test_permissions_open_non_recursive_on_file_uses_644(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            with mock.patch("pathlib.Path.is_dir", return_value=False):
+                exit_code = cli.main(["permissions", "open", "data.csv", "--non-recursive"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["chmod", "644", "data.csv"])
+
+    def test_permissions_open_recursive_applies_755_to_dirs_and_644_to_files(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["permissions", "open", "project/"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_has_calls([
+            mock.call(["find", "project/", "-type", "d", "-exec", "chmod", "755", "{}", "+"]),
+            mock.call(["find", "project/", "-type", "f", "-exec", "chmod", "644", "{}", "+"]),
+        ])
+
+    def test_permissions_private_non_recursive_on_directory_uses_700(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["permissions", "private", ".", "--non-recursive"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["chmod", "700", "."])
+
+    def test_permissions_private_non_recursive_on_file_uses_600(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            with mock.patch("pathlib.Path.is_dir", return_value=False):
+                exit_code = cli.main(["permissions", "private", "secret.txt", "--non-recursive"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["chmod", "600", "secret.txt"])
+
+    def test_permissions_private_recursive_applies_700_to_dirs_and_600_to_files(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["permissions", "private", "project/"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_has_calls([
+            mock.call(["find", "project/", "-type", "d", "-exec", "chmod", "700", "{}", "+"]),
+            mock.call(["find", "project/", "-type", "f", "-exec", "chmod", "600", "{}", "+"]),
+        ])
+
+    def test_permissions_shared_non_recursive_on_directory_applies_775_and_setgid(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["permissions", "shared", ".", "--non-recursive"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_has_calls([
+            mock.call(["chmod", "775", "."]),
+            mock.call(["chmod", "g+s", "."]),
+        ])
+
+    def test_permissions_shared_non_recursive_on_file_uses_664(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            with mock.patch("pathlib.Path.is_dir", return_value=False):
+                exit_code = cli.main(["permissions", "shared", "results.csv", "--non-recursive"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["chmod", "664", "results.csv"])
+
+    def test_permissions_shared_recursive_applies_775_and_setgid_to_dirs_and_664_to_files(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["permissions", "shared", "project/"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_has_calls([
+            mock.call(["find", "project/", "-type", "d", "-exec", "chmod", "775", "{}", "+"]),
+            mock.call(["find", "project/", "-type", "d", "-exec", "chmod", "g+s", "{}", "+"]),
+            mock.call(["find", "project/", "-type", "f", "-exec", "chmod", "664", "{}", "+"]),
+        ])
+
+    def test_permissions_fix_non_recursive_on_directory_uses_755(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["permissions", "fix", ".", "--non-recursive"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["chmod", "755", "."])
+
+    def test_permissions_fix_non_recursive_on_file_uses_644(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            with mock.patch("pathlib.Path.is_dir", return_value=False):
+                exit_code = cli.main(["permissions", "fix", "output.txt", "--non-recursive"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["chmod", "644", "output.txt"])
+
+    def test_permissions_fix_recursive_applies_755_to_dirs_and_644_to_files(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["permissions", "fix", "project/"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_has_calls([
+            mock.call(["find", "project/", "-type", "d", "-exec", "chmod", "755", "{}", "+"]),
+            mock.call(["find", "project/", "-type", "f", "-exec", "chmod", "644", "{}", "+"]),
+        ])
+
+    def test_permissions_stops_on_first_command_failure(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=1) as run_command:
+            exit_code = cli.main(["permissions", "shared", "project/"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(run_command.call_count, 1)
+
+    def test_permissions_rejects_unknown_action(self):
+        stderr = io.StringIO()
+        with mock.patch("mjolnirtools.cli.shell.run_command"):
+            with redirect_stderr(stderr):
+                exit_code = cli.main(["permissions", "public"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn(
+            "Use one of: mt permissions exec, open, private, shared, fix",
+            stderr.getvalue(),
+        )
 
 
 if __name__ == "__main__":

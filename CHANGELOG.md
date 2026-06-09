@@ -2,6 +2,22 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.0.4 - 2026-06-09
+
+### Added
+
+- `mt permissions exec [path]` to make files executable (`chmod +x`).
+- `mt permissions open [path]` to set owner read/write with group and others
+  read-only (755 for directories, 644 for files).
+- `mt permissions private [path]` to restrict access to the owner only
+  (700 for directories, 600 for files).
+- `mt permissions shared [path]` to enable group-writable access with setgid
+  inheritance on directories (775 + `g+s`) and group-writable files (664).
+- `mt permissions fix [path]` to reset permissions to safe defaults
+  (755 for directories, 644 for files).
+- All `mt permissions` subcommands default to the current directory and operate
+  recursively; pass `--non-recursive` to apply only to the target itself.
+
 ## 1.0.3 - 2026-06-08
 
 ### Changed

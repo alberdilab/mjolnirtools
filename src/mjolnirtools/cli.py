@@ -10,9 +10,11 @@ from typing import Annotated
 
 import click
 import typer
-from rich.console import Console
+from rich.console import Console, Group
+from rich.panel import Panel
 from rich.progress_bar import ProgressBar
 from rich.table import Table
+from rich.text import Text
 
 from mjolnirtools import __version__
 from mjolnirtools import shell
@@ -33,6 +35,14 @@ SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
         "  mt slurm pending",
         "  mt slurm running",
         "  mt slurm <jobid>",
+    ],
+    "permissions": [
+        "Subcommands:",
+        "  mt permissions exec [path]",
+        "  mt permissions open [path]",
+        "  mt permissions private [path]",
+        "  mt permissions shared [path]",
+        "  mt permissions fix [path]",
     ],
     "screen": [
         "Subcommands:",
@@ -57,6 +67,32 @@ SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
     ],
 }
 
+ASCII_TITLE = """\
+ooo        ooooo     o8o           oooo               o8o
+`88.       .888'     `"'           `888               `"'
+ 888b     d'888     oooo  .ooooo.   888  ooo. .oo.   oooo  oooo d8b
+ 8 Y88. .P  888     `888 d88' `88b  888  `888P"Y88b  `888  `888""8P
+ 8  `888'   888      888 888   888  888   888   888   888   888
+ 8    Y     888      888 888   888  888   888   888   888   888
+o8o        o888o     888 `Y8bod8P' o888o o888o o888o o888o d888b
+ooooooooooooo        888          oooo
+8'   888   `8    .o. 88P          `888
+     888       .ooooo.P  .ooooo.   888   .oooo.o
+     888      d88' `88b d88' `88b  888  d88(  "8
+     888      888   888 888   888  888  `"Y88b.
+     888      888   888 888   888  888  o.  )88b
+    o888o     `Y8bod8P' `Y8bod8P' o888o 8""888P'                   """
+
+
+SECTION_COLORS: list[tuple[str, str]] = [
+    ("bold cyan", "bold cyan"),
+    ("bold green", "bold green"),
+    ("bold magenta", "bold magenta"),
+    ("bold yellow", "bold yellow"),
+    ("bold blue", "bold blue"),
+    ("bold white", "bold white"),
+]
+
 SHORTCUT_LINES = [
     "Shortcuts:",
     "  mt interactive <hours> = mt slurm interactive <hours>",
@@ -64,14 +100,111 @@ SHORTCUT_LINES = [
     "  mt partition <name> = mt system partition <name>",
 ]
 
+SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
+    (
+        "Job monitoring",
+        (
+            "Monitor and manage your Slurm jobs on the HPC cluster. "
+            "Start interactive sessions or check job queues and status."
+        ),
+        [
+            ("mt slurm interactive <hours>", "Start an interactive Slurm session"),
+            ("  * mt interactive <hours>", "Shortcut"),
+            ("mt slurm list", "List your current jobs"),
+            ("mt slurm all", "List all users' jobs"),
+            ("mt slurm pending", "List pending (waiting) jobs"),
+            ("mt slurm running", "List currently running jobs"),
+            ("mt slurm <jobid>", "Inspect a specific job by ID"),
+        ],
+    ),
+    (
+        "File listing",
+        (
+            "List and browse files in the current directory. "
+            "Sort results by name, modification time, or file size."
+        ),
+        [
+            ("mt list", "List files sorted by name"),
+            ("mt list time", "List files sorted by modification time"),
+            ("mt list size", "List files sorted by size"),
+        ],
+    ),
+    (
+        "File permissions",
+        (
+            "Apply common permission presets to files and directories. "
+            "Defaults to the current directory and applies recursively."
+        ),
+        [
+            ("mt permissions exec [path]", "Make files executable (chmod +x)"),
+            ("mt permissions open [path]", "Owner read/write, group/others read (755/644)"),
+            ("mt permissions private [path]", "Restrict to owner only (700/600)"),
+            ("mt permissions shared [path]", "Group-writable with setgid inheritance (775/664)"),
+            ("mt permissions fix [path]", "Reset to safe defaults (755 dirs, 644 files)"),
+        ],
+    ),
+    (
+        "Screen sessions",
+        (
+            "Manage persistent terminal screen sessions on the cluster. "
+            "Attach to, list, or terminate running sessions."
+        ),
+        [
+            ("mt screen list", "List all active screen sessions"),
+            ("mt screen kill <screenid>", "Kill a screen session by ID"),
+            ("mt screen <screenid>", "Attach to a screen session"),
+        ],
+    ),
+    (
+        "Conda environments",
+        (
+            "Create and manage Conda environments for your software. "
+            "Set up, remove, or browse available environments."
+        ),
+        [
+            ("mt conda create <name>", "Create a new Conda environment"),
+            ("mt conda remove <name>", "Remove an existing Conda environment"),
+            ("mt conda list", "List all available Conda environments"),
+        ],
+    ),
+    (
+        "System",
+        (
+            "Inspect cluster resources including nodes, partitions, CPUs, and memory. "
+            "Check overall availability before submitting large jobs."
+        ),
+        [
+            ("mt system", "Show a cluster resource overview"),
+            ("mt system resources", "Show detailed resource usage"),
+            ("mt system nodes", "List all nodes with state and resources"),
+            ("mt system partitions", "List all partitions"),
+            ("mt system node <name>", "Inspect a specific node in detail"),
+            ("  * mt node <name>", "Shortcut"),
+            ("mt system partition <name>", "Inspect a specific partition in detail"),
+            ("  * mt partition <name>", "Shortcut"),
+        ],
+    ),
+    (
+        "Information",
+        (
+            "Get version and usage information for mjolnirtools. "
+            "Print the installed version or redisplay this help message."
+        ),
+        [
+            ("mt version", "Print the mjolnirtools version"),
+            ("mt help", "Show this help message"),
+        ],
+    ),
+]
+
 
 app = typer.Typer(
     add_completion=False,
     add_help_option=False,
     help=(
-        "Beginner-friendly shortcuts for common Mjolnir HPC workflows, "
+        "Shortcuts for common Mjolnir HPC workflows, "
         "including jobs, files, screen sessions, Conda environments, and "
-        "cluster status."
+        "cluster status. Learn more about it in https://mjolnirtools.readthedocs.io"
     ),
     no_args_is_help=True,
     rich_markup_mode="rich",
@@ -615,6 +748,66 @@ def list_command(
 
 
 @app.command(
+    name="permissions",
+    add_help_option=False,
+    rich_help_panel="File permissions",
+    help="Apply a permission preset to files and directories.",
+)
+def permissions_command(
+    action: Annotated[
+        str,
+        typer.Argument(
+            help="Preset: exec, open, private, shared, or fix.",
+            show_default=False,
+        ),
+    ],
+    path: Annotated[
+        str | None,
+        typer.Argument(
+            help="Target path. Defaults to the current directory.",
+            show_default=False,
+        ),
+    ] = None,
+    non_recursive: Annotated[
+        bool,
+        typer.Option(
+            "--non-recursive",
+            help="Apply only to the target itself, not its contents.",
+        ),
+    ] = False,
+) -> None:
+    """Apply a common permission preset to a path."""
+    target = path or "."
+    recursive = not non_recursive
+    is_dir = Path(target).is_dir()
+
+    if action == "exec":
+        commands = shell.build_permissions_exec_command(target, recursive=recursive)
+    elif action == "open":
+        commands = shell.build_permissions_open_command(
+            target, recursive=recursive, is_dir=is_dir
+        )
+    elif action == "private":
+        commands = shell.build_permissions_private_command(
+            target, recursive=recursive, is_dir=is_dir
+        )
+    elif action == "shared":
+        commands = shell.build_permissions_shared_command(
+            target, recursive=recursive, is_dir=is_dir
+        )
+    elif action == "fix":
+        commands = shell.build_permissions_fix_command(
+            target, recursive=recursive, is_dir=is_dir
+        )
+    else:
+        raise click.UsageError(
+            "Use one of: mt permissions exec, open, private, shared, fix."
+        )
+
+    raise typer.Exit(shell.run_commands(commands))
+
+
+@app.command(
     name="screen",
     add_help_option=False,
     rich_help_panel="Screen sessions",
@@ -783,11 +976,34 @@ def version_command() -> None:
 
 def show_main_help(prog_name: str) -> int:
     """Show top-level help followed by the shortcut aliases."""
-    command = typer.main.get_command(app)
-    context = click.Context(command, info_name=prog_name)
-    typer.echo(command.get_help(context))
-    typer.echo()
-    typer.echo("\n".join(SHORTCUT_LINES))
+    console = Console()
+    console.print()
+    console.print(ASCII_TITLE)
+    console.print()
+    console.print(f" [bold]Usage:[/bold] {prog_name} [OPTIONS] COMMAND [ARGS]...\n")
+    console.print(
+        " Shortcuts for common Mjolnir HPC workflows, "
+        "including jobs, files, screen sessions, Conda environments, and "
+        "cluster status. Learn more about it in https://mjolnirtools.readthedocs.io\n"
+    )
+    for i, (section_name, description, commands) in enumerate(SECTION_INFO):
+        border_style, cmd_style = SECTION_COLORS[i % len(SECTION_COLORS)]
+        desc_style = border_style.replace("bold ", "")
+        cmd_table = Table(show_header=False, box=None, padding=(0, 2, 0, 2))
+        cmd_table.add_column("Command", style=cmd_style, no_wrap=True)
+        cmd_table.add_column("Description")
+        for cmd, desc in commands:
+            cmd_table.add_row(cmd, desc)
+        console.print(
+            Panel(
+                Group(Text(description, style=desc_style), Text(""), cmd_table),
+                title=section_name,
+                title_align="left",
+                border_style=border_style,
+            )
+        )
+    console.print()
+    console.print("\n".join(SHORTCUT_LINES))
     return 0
 
 
@@ -834,7 +1050,7 @@ def main(argv: Sequence[str] | None = None, prog_name: str | None = None) -> int
         return show_subcommand_help(args[0], display_name)
 
     try:
-        app(
+        rv = app(
             args=args,
             prog_name=display_name,
             standalone_mode=False,
@@ -850,6 +1066,8 @@ def main(argv: Sequence[str] | None = None, prog_name: str | None = None) -> int
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
+    if isinstance(rv, int):
+        return rv
     return 0
 
 

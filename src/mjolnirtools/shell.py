@@ -10,6 +10,7 @@ from typing import TextIO
 
 VALID_LIST_SORTS = ("name", "time", "size")
 VALID_LIST_ORDERS = ("asc", "des")
+VALID_PERMISSION_ACTIONS = ("exec", "open", "private", "shared", "fix")
 
 
 def validate_screen_id(value: str) -> str:
@@ -78,6 +79,73 @@ def build_conda_remove_command(env_name: str) -> list[str]:
 def build_conda_list_command() -> list[str]:
     """Build the command that lists Conda environments."""
     return ["conda", "env", "list"]
+
+
+def build_permissions_exec_command(path: str, recursive: bool) -> list[list[str]]:
+    """Build the command(s) that make a path executable."""
+    if recursive:
+        return [["find", path, "-exec", "chmod", "+x", "{}", "+"]]
+    return [["chmod", "+x", path]]
+
+
+def build_permissions_open_command(
+    path: str, recursive: bool, is_dir: bool
+) -> list[list[str]]:
+    """Build the command(s) that open permissions (755 dirs, 644 files)."""
+    if recursive:
+        return [
+            ["find", path, "-type", "d", "-exec", "chmod", "755", "{}", "+"],
+            ["find", path, "-type", "f", "-exec", "chmod", "644", "{}", "+"],
+        ]
+    return [["chmod", "755" if is_dir else "644", path]]
+
+
+def build_permissions_private_command(
+    path: str, recursive: bool, is_dir: bool
+) -> list[list[str]]:
+    """Build the command(s) that restrict permissions to owner only (700 dirs, 600 files)."""
+    if recursive:
+        return [
+            ["find", path, "-type", "d", "-exec", "chmod", "700", "{}", "+"],
+            ["find", path, "-type", "f", "-exec", "chmod", "600", "{}", "+"],
+        ]
+    return [["chmod", "700" if is_dir else "600", path]]
+
+
+def build_permissions_shared_command(
+    path: str, recursive: bool, is_dir: bool
+) -> list[list[str]]:
+    """Build the command(s) that set group-writable permissions with setgid inheritance."""
+    if recursive:
+        return [
+            ["find", path, "-type", "d", "-exec", "chmod", "775", "{}", "+"],
+            ["find", path, "-type", "d", "-exec", "chmod", "g+s", "{}", "+"],
+            ["find", path, "-type", "f", "-exec", "chmod", "664", "{}", "+"],
+        ]
+    if is_dir:
+        return [["chmod", "775", path], ["chmod", "g+s", path]]
+    return [["chmod", "664", path]]
+
+
+def build_permissions_fix_command(
+    path: str, recursive: bool, is_dir: bool
+) -> list[list[str]]:
+    """Build the command(s) that reset permissions to safe defaults (755 dirs, 644 files)."""
+    if recursive:
+        return [
+            ["find", path, "-type", "d", "-exec", "chmod", "755", "{}", "+"],
+            ["find", path, "-type", "f", "-exec", "chmod", "644", "{}", "+"],
+        ]
+    return [["chmod", "755" if is_dir else "644", path]]
+
+
+def run_commands(commands: list[list[str]]) -> int:
+    """Run a sequence of command lists, stopping at the first non-zero exit code."""
+    for command in commands:
+        exit_code = run_command(command)
+        if exit_code != 0:
+            return exit_code
+    return 0
 
 
 def run_command(command: Sequence[str], stderr: TextIO | None = None) -> int:
