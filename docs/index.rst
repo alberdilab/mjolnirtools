@@ -22,10 +22,9 @@ shows the exact commands that ``mjolnirtools`` runs underneath.
 Where to Start
 --------------
 
-If you already know what a Slurm job, partition, and login node are, start with
-the :doc:`quickstart`. If those terms are unfamiliar, read
-:doc:`concepts` first. The :doc:`commands` page is a reference that you can keep
-open while working on the cluster.
+Start with :doc:`installation` to get ``mjolnirtools`` running, then follow
+the :doc:`quickstart` for a first session on the cluster. The **Commands**
+section is a per-topic reference you can keep open while working.
 
 .. note::
 
@@ -35,17 +34,21 @@ open while working on the cluster.
 
 .. toctree::
    :maxdepth: 1
-   :caption: User guide
+   :caption: Intro
 
    installation
-   concepts
    quickstart
-   commands
 
 .. toctree::
    :maxdepth: 1
-   :caption: Administrator guide
+   :caption: Commands
 
-   admin
-   development
-   api
+   cmd_slurm
+   cmd_list
+   cmd_permissions
+   cmd_move
+   cmd_screen
+   cmd_conda
+   cmd_system
+   cmd_config
+   cmd_info

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob as _glob
 import os
 import subprocess
 import sys
@@ -28,7 +29,12 @@ def validate_conda_env_name(value: str) -> str:
     return value
 
 
-def build_list_command(sort_by: str = "name", order: str | None = None) -> list[str]:
+def build_list_command(
+    sort_by: str = "name",
+    order: str | None = None,
+    path: str = ".",
+    match: str | None = None,
+) -> list[str]:
     """Build the local file listing command."""
     sort = sort_by.lower()
     if sort not in VALID_LIST_SORTS:
@@ -49,7 +55,125 @@ def build_list_command(sort_by: str = "name", order: str | None = None) -> list[
     if selected_order != default_order:
         flags += "r"
 
-    return ["ls", flags]
+    if match is not None:
+        pattern = os.path.join(path, match)
+        matched = sorted(_glob.glob(pattern))
+        if not matched:
+            return []
+        return ["ls", flags] + matched
+
+    cmd = ["ls", flags]
+    if path != ".":
+        cmd.append(path)
+    return cmd
+
+
+def run_list_filtered(
+    command: list[str],
+    head: int | None = None,
+    dirs_only: bool = False,
+    files_only: bool = False,
+) -> int:
+    """Run a listing command with optional Python-side filtering and output limiting."""
+    if not command:
+        print("No files matched.", file=sys.stderr)
+        return 1
+
+    if head is None and not dirs_only and not files_only:
+        return run_command(command)
+
+    executable = command[0]
+    try:
+        result = subprocess.run(
+            command,
+            shell=False,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except FileNotFoundError:
+        print(f"Error: '{executable}' not found in PATH.", file=sys.stderr)
+        return 127
+
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+
+    lines = result.stdout.splitlines(keepends=True)
+    header = [ln for ln in lines if ln.startswith("total ")]
+    entries = [ln for ln in lines if not ln.startswith("total ")]
+
+    if dirs_only:
+        entries = [ln for ln in entries if ln.startswith("d")]
+    elif files_only:
+        entries = [ln for ln in entries if ln.startswith("-")]
+
+    if head is not None:
+        entries = entries[:head]
+
+    for line in header + entries:
+        sys.stdout.write(line)
+
+    return result.returncode
+
+
+def build_list_old_command(path: str = ".", days: int = 30) -> list[str]:
+    """Build the find command for files not modified in the given number of days."""
+    if days < 1:
+        raise ValueError("days must be at least 1.")
+    return ["find", path, "-type", "f", "-mtime", f"+{days}"]
+
+
+def _parse_human_size(size_str: str) -> float:
+    """Convert a human-readable size like '1.5G' to bytes for comparison."""
+    s = size_str.strip().upper()
+    if not s:
+        return 0.0
+    suffixes = {"K": 1024.0, "M": 1024.0 ** 2, "G": 1024.0 ** 3, "T": 1024.0 ** 4}
+    if s[-1] in suffixes:
+        try:
+            return float(s[:-1]) * suffixes[s[-1]]
+        except ValueError:
+            return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def run_list_big(path: str = ".", head: int | None = None) -> int:
+    """Run disk usage summary for immediate children of path, sorted by size descending."""
+    cmd = ["du", "-h", "-d", "1", path]
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=False,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except FileNotFoundError:
+        print("Error: 'du' not found in PATH.", file=sys.stderr)
+        return 127
+
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    entries = sorted(
+        lines,
+        key=lambda ln: _parse_human_size(ln.split("\t", 1)[0]),
+        reverse=True,
+    )
+
+    if head is not None:
+        entries = entries[:head]
+
+    for line in entries:
+        print(line)
+
+    return result.returncode
 
 
 def build_screen_attach_command(screen_id: str) -> list[str]:
@@ -184,6 +308,25 @@ def build_move_scratch_script(src: str, dest: str, keep_original: bool) -> str:
 def build_move_scratch_screen_command(session_name: str, script: str) -> list[str]:
     """Build the screen command that runs a transfer in a new detached session."""
     return ["screen", "-dmS", session_name, "bash", "-c", script]
+
+
+def build_move_erda_script(src: str, erda_dest: str, keep_original: bool) -> str:
+    """Build the bash script string for the rsync-based move to ERDA."""
+    def q(s: str) -> str:
+        return '"' + s.replace('"', '\\"') + '"'
+
+    remote_target = f"erda:{erda_dest}"
+    sync_part = (
+        f"ssh erda mkdir -p {q(erda_dest)} && "
+        f"rsync -avh --info=progress2 {q(src)} {q(remote_target)}/"
+    )
+    if keep_original:
+        return sync_part + " && echo 'Transfer complete. Source kept.'"
+    return (
+        f"if {sync_part}; then "
+        f"rm -rf {q(src)} && echo 'Transfer complete. Source deleted.'; "
+        f"else echo 'ERROR: Transfer failed. Source was NOT deleted.'; fi"
+    )
 
 
 def run_commands(commands: list[list[str]]) -> int:

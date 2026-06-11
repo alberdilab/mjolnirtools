@@ -30,6 +30,12 @@ SlurmAccountingRow = tuple[str, str, str, str, str, str]
 ResourceUsageRow = tuple[str, int, int, str]
 
 SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
+    "list": [
+        "Modes:",
+        "  mt list [name|time|size] [path]",
+        "  mt list old [path] [--days N]",
+        "  mt list big [path]",
+    ],
     "slurm": [
         "Subcommands:",
         "  mt slurm interactive <hours>",
@@ -63,6 +69,7 @@ SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
     "move": [
         "Subcommands:",
         "  mt move scratch <path>",
+        "  mt move erda <path> <erda-dest>",
     ],
     "conda": [
         "Subcommands:",
@@ -134,13 +141,15 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
     (
         "File listing",
         (
-            "List and browse files in the current directory. "
-            "Sort results by name, modification time, or file size."
+            "List and browse files in a directory. Sort by name, time, or size. "
+            "Find old files by age or summarise disk usage by size."
         ),
         [
-            ("mt list", "List files sorted by name"),
-            ("mt list time", "List files sorted by modification time"),
-            ("mt list size", "List files sorted by size"),
+            ("mt list [path]", "List files sorted by name"),
+            ("mt list time [path]", "List files sorted by modification time"),
+            ("mt list size [path]", "List files sorted by size"),
+            ("mt list old [path]", "Find files not modified in N days (default 30)"),
+            ("mt list big [path]", "Disk usage of immediate children, largest first"),
         ],
     ),
     (
@@ -165,6 +174,7 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
         ),
         [
             ("mt move scratch <path>", "Move a path from people/ to scratch/ via rsync"),
+            ("mt move erda <path> <erda-dest>", "Move a local path to a directory on ERDA via rsync"),
         ],
     ),
     (
@@ -746,16 +756,23 @@ def slurm_command(
     name="list",
     add_help_option=False,
     rich_help_panel="File listing",
-    help="List files in the current directory.",
+    help="List files in a directory.",
 )
 def list_command(
     sort_by: Annotated[
         str,
         typer.Argument(
-            help="Sort field: name, time, or size.",
+            help="Mode or sort field: name, time, size, old, or big.",
             show_default=False,
         ),
     ] = "name",
+    path: Annotated[
+        str | None,
+        typer.Argument(
+            help="Directory to list. Defaults to the current directory.",
+            show_default=False,
+        ),
+    ] = None,
     asc: Annotated[
         bool,
         typer.Option(
@@ -773,16 +790,99 @@ def list_command(
             rich_help_panel="Sorting",
         ),
     ] = False,
+    head: Annotated[
+        int | None,
+        typer.Option(
+            "--head",
+            min=1,
+            help="Limit output to the N top results.",
+            show_default=False,
+            rich_help_panel="Filtering",
+        ),
+    ] = None,
+    dirs: Annotated[
+        bool,
+        typer.Option(
+            "--dirs",
+            help="Show only directories.",
+            rich_help_panel="Filtering",
+        ),
+    ] = False,
+    files: Annotated[
+        bool,
+        typer.Option(
+            "--files",
+            help="Show only regular files.",
+            rich_help_panel="Filtering",
+        ),
+    ] = False,
+    match: Annotated[
+        str | None,
+        typer.Option(
+            "--match",
+            help="Filter by glob pattern, for example '*.fastq.gz'.",
+            show_default=False,
+            rich_help_panel="Filtering",
+        ),
+    ] = None,
+    days: Annotated[
+        int | None,
+        typer.Option(
+            "--days",
+            min=1,
+            help="For 'old': files not modified in this many days (default 30).",
+            show_default=False,
+            rich_help_panel="Old files",
+        ),
+    ] = None,
 ) -> None:
     """Run the command that lists local files."""
+    mode = sort_by.lower()
+    target_path = path or "."
+    valid_modes = (*shell.VALID_LIST_SORTS, "old", "big")
+
+    if mode not in valid_modes:
+        raise click.UsageError("Sort must be one of: name, time, size, old, big.")
+
+    if mode == "old":
+        if asc or des:
+            raise click.UsageError("'old' mode does not support --asc or --des.")
+        if dirs or files:
+            raise click.UsageError("'old' mode does not support --dirs or --files.")
+        if match is not None:
+            raise click.UsageError("'old' mode does not support --match.")
+        if head is not None:
+            raise click.UsageError("'old' mode does not support --head.")
+        days_val = days if days is not None else 30
+        command = shell.build_list_old_command(path=target_path, days=days_val)
+        raise typer.Exit(shell.run_command(command))
+
+    if mode == "big":
+        if asc or des:
+            raise click.UsageError("'big' mode does not support --asc or --des.")
+        if dirs or files:
+            raise click.UsageError("'big' mode does not support --dirs or --files.")
+        if match is not None:
+            raise click.UsageError("'big' mode does not support --match.")
+        if days is not None:
+            raise click.UsageError("'big' mode does not support --days.")
+        raise typer.Exit(shell.run_list_big(path=target_path, head=head))
+
+    # name, time, size modes
     if asc and des:
         raise click.UsageError("Use only one of --asc or --des.")
-    if sort_by.lower() not in shell.VALID_LIST_SORTS:
-        raise click.UsageError("Sort must be one of: name, time, size.")
+    if dirs and files:
+        raise click.UsageError("Use only one of --dirs or --files.")
+    if days is not None:
+        raise click.UsageError("--days is only valid with 'old' mode.")
 
     order = "asc" if asc else "des" if des else None
-    command = shell.build_list_command(sort_by=sort_by, order=order)
-    raise typer.Exit(shell.run_command(command))
+    command = shell.build_list_command(
+        sort_by=mode, order=order, path=target_path, match=match
+    )
+    raise typer.Exit(
+        shell.run_list_filtered(command, head=head, dirs_only=dirs, files_only=files)
+    )
 
 
 @app.command(
@@ -1011,17 +1111,24 @@ def move_command(
     destination: Annotated[
         str,
         typer.Argument(
-            help="Destination type: scratch.",
+            help="Destination type: scratch or erda.",
             show_default=False,
         ),
     ],
     source: Annotated[
         str,
         typer.Argument(
-            help=f"Source path under {shell.PEOPLE_BASE}/.",
+            help=f"Source path. For scratch: must be under {shell.PEOPLE_BASE}/.",
             show_default=False,
         ),
     ],
+    erda_dest: Annotated[
+        str | None,
+        typer.Argument(
+            help="Destination directory on ERDA (required for 'erda').",
+            show_default=False,
+        ),
+    ] = None,
     keep_original: Annotated[
         bool,
         typer.Option(
@@ -1030,43 +1137,81 @@ def move_command(
         ),
     ] = False,
 ) -> None:
-    """Move a path from people/ to scratch/ using rsync in a background screen session."""
-    if destination != "scratch":
-        raise click.UsageError("Use: mt move scratch <path>")
-
-    try:
-        dest = shell.derive_scratch_destination(source)
-    except ValueError as exc:
-        raise click.UsageError(str(exc))
-
-    script = shell.build_move_scratch_script(source, dest, keep_original)
+    """Move a local path to scratch/ or ERDA using rsync in a background screen session."""
     console = Console()
 
-    console.print()
-    if shell.is_inside_screen():
-        current = os.environ.get("STY", "unknown")
-        console.print(f"[bold green]Already inside screen session:[/bold green] [bold]{current}[/bold]")
-        console.print(f"  Source:      [bold]{source}[/bold]")
-        console.print(f"  Destination: [bold]{dest}[/bold]")
-        if keep_original:
-            console.print("  [cyan]Source will be kept after transfer.[/cyan]")
-        else:
-            console.print("  [yellow]Source will be deleted after successful transfer.[/yellow]")
-        console.print("  [dim]Running transfer in the current session.[/dim]")
+    if destination == "scratch":
+        try:
+            dest = shell.derive_scratch_destination(source)
+        except ValueError as exc:
+            raise click.UsageError(str(exc))
+
+        script = shell.build_move_scratch_script(source, dest, keep_original)
+
         console.print()
-        command: list[str] = ["bash", "-c", script]
+        if shell.is_inside_screen():
+            current = os.environ.get("STY", "unknown")
+            console.print(f"[bold green]Already inside screen session:[/bold green] [bold]{current}[/bold]")
+            console.print(f"  Source:      [bold]{source}[/bold]")
+            console.print(f"  Destination: [bold]{dest}[/bold]")
+            if keep_original:
+                console.print("  [cyan]Source will be kept after transfer.[/cyan]")
+            else:
+                console.print("  [yellow]Source will be deleted after successful transfer.[/yellow]")
+            console.print("  [dim]Running transfer in the current session.[/dim]")
+            console.print()
+            command: list[str] = ["bash", "-c", script]
+        else:
+            session_name = f"mt-move-{time.strftime('%Y%m%d-%H%M%S')}"
+            console.print(f"[bold green]Opening screen session:[/bold green] [bold]{session_name}[/bold]")
+            console.print(f"  Source:      [bold]{source}[/bold]")
+            console.print(f"  Destination: [bold]{dest}[/bold]")
+            if keep_original:
+                console.print("  [cyan]Source will be kept after transfer.[/cyan]")
+            else:
+                console.print("  [yellow]Source will be deleted after successful transfer.[/yellow]")
+            console.print("  [dim]The screen session will close automatically when done.[/dim]")
+            console.print()
+            command = shell.build_move_scratch_screen_command(session_name, script)
+
+    elif destination == "erda":
+        if erda_dest is None:
+            raise click.UsageError("mt move erda requires a destination path on ERDA.")
+        if not config_module._config_has_erda(config_module._SSH_CONFIG):
+            raise click.UsageError(
+                "ERDA is not configured. Run 'mt config erda' first."
+            )
+
+        script = shell.build_move_erda_script(source, erda_dest, keep_original)
+
+        console.print()
+        if shell.is_inside_screen():
+            current = os.environ.get("STY", "unknown")
+            console.print(f"[bold green]Already inside screen session:[/bold green] [bold]{current}[/bold]")
+            console.print(f"  Source:      [bold]{source}[/bold]")
+            console.print(f"  Destination: [bold]erda:{erda_dest}[/bold]")
+            if keep_original:
+                console.print("  [cyan]Source will be kept after transfer.[/cyan]")
+            else:
+                console.print("  [yellow]Source will be deleted after successful transfer.[/yellow]")
+            console.print("  [dim]Running transfer in the current session.[/dim]")
+            console.print()
+            command = ["bash", "-c", script]
+        else:
+            session_name = f"mt-move-erda-{time.strftime('%Y%m%d-%H%M%S')}"
+            console.print(f"[bold green]Opening screen session:[/bold green] [bold]{session_name}[/bold]")
+            console.print(f"  Source:      [bold]{source}[/bold]")
+            console.print(f"  Destination: [bold]erda:{erda_dest}[/bold]")
+            if keep_original:
+                console.print("  [cyan]Source will be kept after transfer.[/cyan]")
+            else:
+                console.print("  [yellow]Source will be deleted after successful transfer.[/yellow]")
+            console.print("  [dim]The screen session will close automatically when done.[/dim]")
+            console.print()
+            command = shell.build_move_scratch_screen_command(session_name, script)
+
     else:
-        session_name = f"mt-move-{time.strftime('%Y%m%d-%H%M%S')}"
-        console.print(f"[bold green]Opening screen session:[/bold green] [bold]{session_name}[/bold]")
-        console.print(f"  Source:      [bold]{source}[/bold]")
-        console.print(f"  Destination: [bold]{dest}[/bold]")
-        if keep_original:
-            console.print("  [cyan]Source will be kept after transfer.[/cyan]")
-        else:
-            console.print("  [yellow]Source will be deleted after successful transfer.[/yellow]")
-        console.print("  [dim]The screen session will close automatically when done.[/dim]")
-        console.print()
-        command = shell.build_move_scratch_screen_command(session_name, script)
+        raise click.UsageError("Use: mt move scratch <path>  or  mt move erda <path> <erda-dest>")
 
     raise typer.Exit(shell.run_command(command))
 

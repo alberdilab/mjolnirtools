@@ -2,6 +2,18 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.0.6 - 2026-06-11
+
+### Added
+
+- `mt move erda <path> <erda-dest>` to transfer a local file or directory to a
+  specified destination directory on ERDA via ``rsync`` over SSH. The command
+  checks that ``mt config erda`` has been run first (``Host erda`` must be
+  present in ``~/.ssh/config``), creates the remote directory with
+  ``ssh erda mkdir -p``, then runs ``rsync -avh --info=progress2`` inside a
+  detached screen session named ``mt-move-erda-YYYYMMDD-HHMMSS``. Pass
+  ``--keep-original`` to skip deleting the source after a successful transfer.
+
 ## 1.0.5 - 2026-06-11
 
 ### Changed

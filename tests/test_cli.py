@@ -253,6 +253,157 @@ class CliTests(unittest.TestCase):
         self.assertIn("Sort must be one of: name, time, size", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
 
+    def test_list_with_path_passes_path_to_command(self):
+        with mock.patch("mjolnirtools.cli.shell.run_list_filtered", return_value=0) as run_filtered:
+            exit_code = cli.main(["list", "name", "/data"])
+
+        self.assertEqual(exit_code, 0)
+        run_filtered.assert_called_once_with(
+            ["ls", "-lah", "/data"], head=None, dirs_only=False, files_only=False
+        )
+
+    def test_list_time_with_path(self):
+        with mock.patch("mjolnirtools.cli.shell.run_list_filtered", return_value=0) as run_filtered:
+            exit_code = cli.main(["list", "time", "/data"])
+
+        self.assertEqual(exit_code, 0)
+        run_filtered.assert_called_once_with(
+            ["ls", "-laht", "/data"], head=None, dirs_only=False, files_only=False
+        )
+
+    def test_list_head_limits_results(self):
+        with mock.patch("mjolnirtools.cli.shell.run_list_filtered", return_value=0) as run_filtered:
+            exit_code = cli.main(["list", "--head", "5"])
+
+        self.assertEqual(exit_code, 0)
+        run_filtered.assert_called_once_with(
+            ["ls", "-lah"], head=5, dirs_only=False, files_only=False
+        )
+
+    def test_list_dirs_filters_to_directories(self):
+        with mock.patch("mjolnirtools.cli.shell.run_list_filtered", return_value=0) as run_filtered:
+            exit_code = cli.main(["list", "--dirs"])
+
+        self.assertEqual(exit_code, 0)
+        run_filtered.assert_called_once_with(
+            ["ls", "-lah"], head=None, dirs_only=True, files_only=False
+        )
+
+    def test_list_files_filters_to_regular_files(self):
+        with mock.patch("mjolnirtools.cli.shell.run_list_filtered", return_value=0) as run_filtered:
+            exit_code = cli.main(["list", "--files"])
+
+        self.assertEqual(exit_code, 0)
+        run_filtered.assert_called_once_with(
+            ["ls", "-lah"], head=None, dirs_only=False, files_only=True
+        )
+
+    def test_list_rejects_dirs_and_files_together(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["list", "--dirs", "--files"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("Use only one of --dirs or --files", stderr.getvalue())
+
+    def test_list_match_expands_glob_pattern(self):
+        with mock.patch("mjolnirtools.cli.shell._glob.glob", return_value=["a.fastq.gz"]):
+            with mock.patch("mjolnirtools.cli.shell.run_list_filtered", return_value=0) as run_filtered:
+                exit_code = cli.main(["list", "--match", "*.fastq.gz"])
+
+        self.assertEqual(exit_code, 0)
+        run_filtered.assert_called_once_with(
+            ["ls", "-lah", "a.fastq.gz"], head=None, dirs_only=False, files_only=False
+        )
+
+    def test_list_days_outside_old_mode_is_rejected(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["list", "--days", "60"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("--days is only valid with 'old' mode", stderr.getvalue())
+
+    def test_list_old_uses_find_with_default_days(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["list", "old"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(
+            ["find", ".", "-type", "f", "-mtime", "+30"]
+        )
+
+    def test_list_old_accepts_custom_days(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["list", "old", "--days", "60"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(
+            ["find", ".", "-type", "f", "-mtime", "+60"]
+        )
+
+    def test_list_old_accepts_path(self):
+        with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+            exit_code = cli.main(["list", "old", "/scratch/project"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(
+            ["find", "/scratch/project", "-type", "f", "-mtime", "+30"]
+        )
+
+    def test_list_old_rejects_sort_order_flags(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["list", "old", "--asc"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("'old' mode does not support --asc or --des", stderr.getvalue())
+
+    def test_list_old_rejects_dirs_flag(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["list", "old", "--dirs"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("'old' mode does not support --dirs or --files", stderr.getvalue())
+
+    def test_list_big_calls_run_list_big(self):
+        with mock.patch("mjolnirtools.cli.shell.run_list_big", return_value=0) as run_big:
+            exit_code = cli.main(["list", "big"])
+
+        self.assertEqual(exit_code, 0)
+        run_big.assert_called_once_with(path=".", head=None)
+
+    def test_list_big_accepts_path(self):
+        with mock.patch("mjolnirtools.cli.shell.run_list_big", return_value=0) as run_big:
+            exit_code = cli.main(["list", "big", "/scratch/project"])
+
+        self.assertEqual(exit_code, 0)
+        run_big.assert_called_once_with(path="/scratch/project", head=None)
+
+    def test_list_big_accepts_head(self):
+        with mock.patch("mjolnirtools.cli.shell.run_list_big", return_value=0) as run_big:
+            exit_code = cli.main(["list", "big", "--head", "10"])
+
+        self.assertEqual(exit_code, 0)
+        run_big.assert_called_once_with(path=".", head=10)
+
+    def test_list_big_rejects_dirs_flag(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["list", "big", "--dirs"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("'big' mode does not support --dirs or --files", stderr.getvalue())
+
+    def test_list_big_rejects_days_option(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["list", "big", "--days", "30"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("'big' mode does not support --days", stderr.getvalue())
+
     def test_screen_dispatch_attaches_to_session(self):
         with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
             exit_code = cli.main(["screen", "12345.session"])
@@ -909,6 +1060,62 @@ class CliTests(unittest.TestCase):
             "Use one of: mt permissions exec, open, private, shared, fix",
             stderr.getvalue(),
         )
+
+    def test_move_erda_dispatches_screen_command_when_erda_is_configured(self):
+        with mock.patch("mjolnirtools.cli.config_module._config_has_erda", return_value=True):
+            with mock.patch("mjolnirtools.cli.shell.is_inside_screen", return_value=False):
+                with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+                    exit_code = cli.main(
+                        ["move", "erda", "/local/data/project", "/erda/projects/myproject"]
+                    )
+
+        self.assertEqual(exit_code, 0)
+        args = run_command.call_args[0][0]
+        self.assertEqual(args[0], "screen")
+        self.assertIn("-dmS", args)
+        script = args[-1]
+        self.assertIn("rsync", script)
+        self.assertIn("erda:/erda/projects/myproject", script)
+
+    def test_move_erda_runs_inline_when_inside_screen(self):
+        with mock.patch("mjolnirtools.cli.config_module._config_has_erda", return_value=True):
+            with mock.patch("mjolnirtools.cli.shell.is_inside_screen", return_value=True):
+                with mock.patch("mjolnirtools.cli.shell.run_command", return_value=0) as run_command:
+                    exit_code = cli.main(
+                        ["move", "erda", "/local/data/project", "/erda/projects/myproject"]
+                    )
+
+        self.assertEqual(exit_code, 0)
+        args = run_command.call_args[0][0]
+        self.assertEqual(args[:2], ["bash", "-c"])
+
+    def test_move_erda_rejects_missing_erda_dest(self):
+        stderr = io.StringIO()
+        with mock.patch("mjolnirtools.cli.config_module._config_has_erda", return_value=True):
+            with redirect_stderr(stderr):
+                exit_code = cli.main(["move", "erda", "/local/data/project"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("mt move erda requires a destination path on ERDA", stderr.getvalue())
+
+    def test_move_erda_rejects_unconfigured_erda(self):
+        stderr = io.StringIO()
+        with mock.patch("mjolnirtools.cli.config_module._config_has_erda", return_value=False):
+            with redirect_stderr(stderr):
+                exit_code = cli.main(
+                    ["move", "erda", "/local/data/project", "/erda/projects/myproject"]
+                )
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("ERDA is not configured", stderr.getvalue())
+
+    def test_move_rejects_unknown_destination(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["move", "cloud", "/local/data"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("mt move scratch", stderr.getvalue())
 
 
 if __name__ == "__main__":
