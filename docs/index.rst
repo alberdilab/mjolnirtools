@@ -34,7 +34,7 @@ open while working on the cluster.
    availability are still controlled by the Mjolnir Slurm configuration.
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: User guide
 
    installation
@@ -43,7 +43,7 @@ open while working on the cluster.
    commands
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: Administrator guide
 
    admin

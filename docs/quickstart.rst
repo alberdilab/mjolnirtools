@@ -132,6 +132,43 @@ Create, remove, or list Conda environments:
    $ mt conda list
    $ mt conda remove analysis
 
+Configure External Services
+---------------------------
+
+The configuration wizards set up connections to external services used in
+research data workflows. Run the wizard for each service once; afterwards
+you can use that service from the cluster without entering passwords or tokens
+manually.
+
+Set up SSH access to ERDA for data archiving and transfer:
+
+.. code-block:: console
+
+   $ mt config erda
+
+Set up SSH access to GitHub for password-free git operations:
+
+.. code-block:: console
+
+   $ mt config github
+
+Configure an NCBI API key and the SRA Toolkit cache directory:
+
+.. code-block:: console
+
+   $ mt config ncbi
+
+Configure a Zenodo personal access token for programmatic data deposition:
+
+.. code-block:: console
+
+   $ mt config zenodo
+
+Each wizard guides you through any steps that require browser interaction,
+handles local key generation and config file writes, and optionally tests
+the connection before finishing. The :ref:`commands-config` section of the
+command reference describes each wizard in detail.
+
 Check the Installed Version
 ---------------------------
 

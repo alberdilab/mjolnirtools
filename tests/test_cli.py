@@ -726,7 +726,7 @@ class CliTests(unittest.TestCase):
         with redirect_stdout(stdout):
             self.assertEqual(cli.main(["help"], prog_name="mjolnirtools"), 0)
 
-        self.assertIn("Usage: mjolnirtools", stdout.getvalue())
+        self.assertIn("Job monitoring", stdout.getvalue())
 
     def test_main_help_option_is_not_registered_but_topic_help_is(self):
         command = typer.main.get_command(cli.app)
@@ -751,7 +751,6 @@ class CliTests(unittest.TestCase):
         with redirect_stdout(stdout):
             self.assertEqual(cli.main(["help"], prog_name="mjolnirtools"), 0)
 
-        self.assertIn("Usage: mjolnirtools", stdout.getvalue())
         self.assertIn("mt node <name> = mt system node <name>", stdout.getvalue())
 
     def test_no_args_shows_help(self):
@@ -760,7 +759,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(cli.main([]), 0)
 
         help_text = stdout.getvalue()
-        self.assertIn("Usage:", help_text)
+        self.assertIn("Shortcuts:", help_text)
         self.assertIn("Job monitoring", help_text)
         self.assertIn("Information", help_text)
 

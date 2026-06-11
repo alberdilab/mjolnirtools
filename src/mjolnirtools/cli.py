@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated
@@ -17,6 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from mjolnirtools import __version__
+from mjolnirtools import config as config_module
 from mjolnirtools import shell
 from mjolnirtools import slurm
 
@@ -49,6 +52,17 @@ SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
         "  mt screen list",
         "  mt screen kill <screenid>",
         "  mt screen <screenid>",
+    ],
+    "config": [
+        "Subcommands:",
+        "  mt config erda",
+        "  mt config github",
+        "  mt config ncbi",
+        "  mt config zenodo",
+    ],
+    "move": [
+        "Subcommands:",
+        "  mt move scratch <path>",
     ],
     "conda": [
         "Subcommands:",
@@ -144,6 +158,16 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        "File operations",
+        (
+            "Move files and directories between project locations. "
+            "Transfers run inside a background screen session using rsync."
+        ),
+        [
+            ("mt move scratch <path>", "Move a path from people/ to scratch/ via rsync"),
+        ],
+    ),
+    (
         "Screen sessions",
         (
             "Manage persistent terminal screen sessions on the cluster. "
@@ -185,6 +209,19 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        "Configuration",
+        (
+            "Configure connections to external services. "
+            "Guided wizards handle key generation, SSH config, and connection testing."
+        ),
+        [
+            ("mt config erda", "Set up SSH/SFTP access to ERDA (erda.dk)"),
+            ("mt config github", "Set up SSH access to GitHub (github.com)"),
+            ("mt config ncbi", "Configure NCBI API key and SRA Toolkit cache"),
+            ("mt config zenodo", "Configure Zenodo personal access token"),
+        ],
+    ),
+    (
         "Information",
         (
             "Get version and usage information for mjolnirtools. "
@@ -204,7 +241,8 @@ app = typer.Typer(
     help=(
         "Shortcuts for common Mjolnir HPC workflows, "
         "including jobs, files, screen sessions, Conda environments, and "
-        "cluster status. Learn more about it in https://mjolnirtools.readthedocs.io"
+        "cluster status. Learn more at "
+        "[link=https://mjolnirtools.readthedocs.io]mjolnirtools.readthedocs.io[/link]"
     ),
     no_args_is_help=True,
     rich_markup_mode="rich",
@@ -964,6 +1002,103 @@ def system_command(
 
 
 @app.command(
+    name="move",
+    add_help_option=False,
+    rich_help_panel="File operations",
+    help="Move files between project directories via rsync in a screen session.",
+)
+def move_command(
+    destination: Annotated[
+        str,
+        typer.Argument(
+            help="Destination type: scratch.",
+            show_default=False,
+        ),
+    ],
+    source: Annotated[
+        str,
+        typer.Argument(
+            help=f"Source path under {shell.PEOPLE_BASE}/.",
+            show_default=False,
+        ),
+    ],
+    keep_original: Annotated[
+        bool,
+        typer.Option(
+            "--keep-original",
+            help="Keep the source path after the transfer (skip deletion).",
+        ),
+    ] = False,
+) -> None:
+    """Move a path from people/ to scratch/ using rsync in a background screen session."""
+    if destination != "scratch":
+        raise click.UsageError("Use: mt move scratch <path>")
+
+    try:
+        dest = shell.derive_scratch_destination(source)
+    except ValueError as exc:
+        raise click.UsageError(str(exc))
+
+    script = shell.build_move_scratch_script(source, dest, keep_original)
+    console = Console()
+
+    console.print()
+    if shell.is_inside_screen():
+        current = os.environ.get("STY", "unknown")
+        console.print(f"[bold green]Already inside screen session:[/bold green] [bold]{current}[/bold]")
+        console.print(f"  Source:      [bold]{source}[/bold]")
+        console.print(f"  Destination: [bold]{dest}[/bold]")
+        if keep_original:
+            console.print("  [cyan]Source will be kept after transfer.[/cyan]")
+        else:
+            console.print("  [yellow]Source will be deleted after successful transfer.[/yellow]")
+        console.print("  [dim]Running transfer in the current session.[/dim]")
+        console.print()
+        command: list[str] = ["bash", "-c", script]
+    else:
+        session_name = f"mt-move-{time.strftime('%Y%m%d-%H%M%S')}"
+        console.print(f"[bold green]Opening screen session:[/bold green] [bold]{session_name}[/bold]")
+        console.print(f"  Source:      [bold]{source}[/bold]")
+        console.print(f"  Destination: [bold]{dest}[/bold]")
+        if keep_original:
+            console.print("  [cyan]Source will be kept after transfer.[/cyan]")
+        else:
+            console.print("  [yellow]Source will be deleted after successful transfer.[/yellow]")
+        console.print("  [dim]The screen session will close automatically when done.[/dim]")
+        console.print()
+        command = shell.build_move_scratch_screen_command(session_name, script)
+
+    raise typer.Exit(shell.run_command(command))
+
+
+@app.command(
+    name="config",
+    add_help_option=False,
+    rich_help_panel="Configuration",
+    help="Run a setup wizard for an external service.",
+)
+def config_command(
+    service: Annotated[
+        str,
+        typer.Argument(
+            help="Service to configure: erda, github, ncbi, or zenodo.",
+            show_default=False,
+        ),
+    ] = "erda",
+) -> None:
+    """Run a configuration wizard for an external service."""
+    if service == "erda":
+        raise typer.Exit(config_module.run_erda_setup())
+    if service == "github":
+        raise typer.Exit(config_module.run_github_setup())
+    if service == "ncbi":
+        raise typer.Exit(config_module.run_ncbi_setup())
+    if service == "zenodo":
+        raise typer.Exit(config_module.run_zenodo_setup())
+    raise click.UsageError("Use one of: mt config erda, mt config github, mt config ncbi, mt config zenodo")
+
+
+@app.command(
     name="version",
     add_help_option=False,
     rich_help_panel="Information",
@@ -980,11 +1115,11 @@ def show_main_help(prog_name: str) -> int:
     console.print()
     console.print(ASCII_TITLE)
     console.print()
-    console.print(f" [bold]Usage:[/bold] {prog_name} [OPTIONS] COMMAND [ARGS]...\n")
     console.print(
         " Shortcuts for common Mjolnir HPC workflows, "
         "including jobs, files, screen sessions, Conda environments, and "
-        "cluster status. Learn more about it in https://mjolnirtools.readthedocs.io\n"
+        "cluster status. Learn more at "
+        "[link=https://mjolnirtools.readthedocs.io]mjolnirtools.readthedocs.io[/link]\n"
     )
     for i, (section_name, description, commands) in enumerate(SECTION_INFO):
         border_style, cmd_style = SECTION_COLORS[i % len(SECTION_COLORS)]

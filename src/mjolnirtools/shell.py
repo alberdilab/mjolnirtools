@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -137,6 +138,52 @@ def build_permissions_fix_command(
             ["find", path, "-type", "f", "-exec", "chmod", "644", "{}", "+"],
         ]
     return [["chmod", "755" if is_dir else "644", path]]
+
+
+PEOPLE_BASE = "/projects/alberdilab/people"
+SCRATCH_BASE = "/projects/alberdilab/scratch"
+
+
+def derive_scratch_destination(source: str) -> str:
+    """Compute the scratch destination path for a given people source path."""
+    src = source.rstrip("/")
+    prefix = PEOPLE_BASE + "/"
+    if not src.startswith(prefix):
+        raise ValueError(
+            f"Source must be a path under {PEOPLE_BASE}/, "
+            f"for example {PEOPLE_BASE}/username/project."
+        )
+    return SCRATCH_BASE + src[len(PEOPLE_BASE):]
+
+
+def is_inside_screen() -> bool:
+    """Return True if the process is running inside a GNU Screen session."""
+    return bool(os.environ.get("STY"))
+
+
+def build_move_scratch_script(src: str, dest: str, keep_original: bool) -> str:
+    """Build the bash script string for the rsync-based move operation."""
+    dest_parent = dest.rsplit("/", 1)[0]
+
+    def q(s: str) -> str:
+        return '"' + s.replace('"', '\\"') + '"'
+
+    sync_part = (
+        f"mkdir -p {q(dest_parent)} && "
+        f"rsync -avh --info=progress2 {q(src)} {q(dest_parent)}/"
+    )
+    if keep_original:
+        return sync_part + " && echo 'Transfer complete. Source kept.'"
+    return (
+        f"if {sync_part}; then "
+        f"rm -rf {q(src)} && echo 'Transfer complete. Source deleted.'; "
+        f"else echo 'ERROR: Transfer failed. Source was NOT deleted.'; fi"
+    )
+
+
+def build_move_scratch_screen_command(session_name: str, script: str) -> list[str]:
+    """Build the screen command that runs a transfer in a new detached session."""
+    return ["screen", "-dmS", session_name, "bash", "-c", script]
 
 
 def run_commands(commands: list[list[str]]) -> int:

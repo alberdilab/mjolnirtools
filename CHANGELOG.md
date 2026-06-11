@@ -2,6 +2,36 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.0.5 - 2026-06-11
+
+### Changed
+
+- Switch documentation theme from Alabaster to Read the Docs (sphinx_rtd_theme).
+  Each topic now appears as a distinct first-level entry in the sidebar under its
+  group caption (User guide / Administrator guide).
+
+### Added
+
+- `mt config erda` interactive wizard to set up SSH and SFTP access to ERDA
+  (erda.dk). Generates an Ed25519 key pair when needed, displays the public key
+  for upload to ERDA's Setup → SFTP/SCP/FTPS page, writes the `Host erda` block
+  to `~/.ssh/config`, and optionally tests the connection.
+- `mt config github` interactive wizard to set up SSH access to GitHub
+  (github.com). Generates an Ed25519 key pair when needed, displays the public
+  key for upload to GitHub Settings → SSH keys, writes the `Host github.com`
+  block to `~/.ssh/config`, and tests the connection by checking the
+  `ssh -T git@github.com` output for the success message.
+- `mt config ncbi` interactive wizard to configure an NCBI API key and SRA
+  Toolkit cache directory. Appends `NCBI_API_KEY` to the shell profile
+  (`~/.bashrc`, `~/.zshrc`, or `~/.profile` depending on the shell), writes
+  `~/.ncbi/user-settings.mkfg` with the chosen cache path, and optionally tests
+  connectivity via NCBI E-utilities.
+- `mt config zenodo` interactive wizard to configure a Zenodo personal access
+  token. Appends `ZENODO_TOKEN` to the shell profile, writes the token to
+  `~/.config/zenodo/token` (mode 600), optionally configures a sandbox token
+  (`ZENODO_SANDBOX_TOKEN` for sandbox.zenodo.org), and optionally verifies the
+  token against the Zenodo depositions API.
+
 ## 1.0.4 - 2026-06-09
 
 ### Added
