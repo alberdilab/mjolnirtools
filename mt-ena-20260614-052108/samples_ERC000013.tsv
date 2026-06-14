@@ -1,0 +1,4 @@
+#checklist_accession	ERC000013
+sample_alias	sample_title	taxon_id	scientific_name	project_name	collection_date	geographic_location_latitude	geographic_location_longitude	broadscale_environmental_context	local_environmental_context	environmental_medium	geographic_location_country_andor_sea
+#units						DD	DD				
+sample_1	TODO	TODO									

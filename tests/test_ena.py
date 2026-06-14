@@ -608,6 +608,73 @@ class EnaTests(unittest.TestCase):
             self.assertIn("10 file(s)", output)
             self.assertIn("+7 more", output)
 
+    def test_extract_sample_names_removes_extensions_and_paired_indicators(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            files = [
+                base / "sample1_R1.fastq.gz",
+                base / "sample1_R2.fastq.gz",
+                base / "sample2_1.fq.gz",
+                base / "sample2_2.fq.gz",
+                base / "sample3.fasta",
+            ]
+            for f in files:
+                f.touch()
+
+            samples = ena.extract_sample_names(files)
+
+            self.assertEqual(samples, ["sample1", "sample2", "sample3"])
+
+    def test_extract_sample_names_handles_various_extensions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            files = [
+                base / "reads.fastq.gz",
+                base / "genome.fasta",
+                base / "transcript.fa.gz",
+                base / "sequence.embl",
+            ]
+            for f in files:
+                f.touch()
+
+            samples = ena.extract_sample_names(files)
+
+            self.assertEqual(samples, ["genome", "reads", "sequence", "transcript"])
+
+    def test_extract_sample_names_deduplicates_paired_reads(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            files = [
+                base / "mysample_forward.fastq.gz",
+                base / "mysample_reverse.fastq.gz",
+            ]
+            for f in files:
+                f.touch()
+
+            samples = ena.extract_sample_names(files)
+
+            self.assertEqual(samples, ["mysample"])
+
+    def test_write_metadata_template_with_sample_names(self):
+        checklist = ena.parse_checklist_xml(CHECKLIST_XML)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "samples.tsv"
+            ena.write_metadata_template(
+                checklist,
+                path,
+                sample_names=["sample_1", "sample_2", "sample_3"],
+            )
+            text = path.read_text()
+
+            self.assertIn("#checklist_accession\tERC999999", text)
+            self.assertIn("sample_1\tTODO\tTODO", text)
+            self.assertIn("sample_2\tTODO\tTODO", text)
+            self.assertIn("sample_3\tTODO\tTODO", text)
+
+            # Verify each sample appears on its own line
+            lines = [line for line in text.split("\n") if line.strip()]
+            self.assertEqual(len(lines), 6)  # accession, headers, units, and 3 samples
+
 
 if __name__ == "__main__":
     unittest.main()

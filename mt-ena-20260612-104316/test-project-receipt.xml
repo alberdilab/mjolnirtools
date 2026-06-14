@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="receipt.xsl"?>
+<RECEIPT receiptDate="2026-06-12T09:45:14.606+01:00" submissionFile="test-project-submission.xml" success="false">
+     <SUBMISSION alias="SUBMISSION-12-06-2026-09:45:14:568"/>
+     <MESSAGES>
+          <ERROR>Failed to validate project xml, error: string length (3) is less than minLength facet (20) for type of TITLE element in ProjectType</ERROR>
+          <ERROR>Failed to validate project xml, error: string length (3) is less than minLength facet (20) for type of DESCRIPTION element in ProjectType</ERROR>
+          <INFO>This submission is a TEST submission and will be discarded within 24 hours</INFO>
+     </MESSAGES>
+     <ACTIONS>ADD</ACTIONS>
+</RECEIPT>

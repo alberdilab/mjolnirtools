@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="receipt.xsl"?>
+<RECEIPT receiptDate="2026-06-14T04:22:35.327+01:00" submissionFile="test-project-submission.xml" success="true">
+     <PROJECT accession="PRJEB114751" alias="asasd sd" status="PRIVATE" holdUntilDate="2028-06-14+01:00">
+          <EXT_ID accession="ERP195007" type="study"/>
+     </PROJECT>
+     <SUBMISSION accession="ERA36435213" alias="SUBMISSION-14-06-2026-04:22:35:278"/>
+     <MESSAGES>
+          <INFO>This submission is a TEST submission and will be discarded within 24 hours</INFO>
+     </MESSAGES>
+     <ACTIONS>ADD</ACTIONS>
+</RECEIPT>

@@ -223,12 +223,61 @@ def _print_upload_instructions(console: Console, scp_command: str, remote_path: 
     ))
 
 
+def extract_sample_names(data_files: list[Path]) -> list[str]:
+    """Extract unique sample names from data file names.
+
+    Removes common file extensions and paired-end indicators to identify samples.
+    """
+    sample_names: set[str] = set()
+
+    # Common file extensions, longest first to avoid partial matches
+    extensions = (
+        ".fastq.gz", ".fasta.gz", ".fna.gz", ".fa.gz",
+        ".fastq", ".fasta", ".fna", ".fa",
+        ".fq.gz", ".fq",
+        ".bam", ".cram", ".embl", ".dat",
+    )
+
+    for file_path in data_files:
+        name = file_path.name.lower()
+
+        # Remove file extension
+        sample_name = name
+        for ext in extensions:
+            if sample_name.endswith(ext):
+                sample_name = sample_name[:-len(ext)]
+                break
+
+        # Remove paired-end indicators (both prefix forms and suffix forms)
+        # Handle patterns like _R1, _R2, _r1, _r2, _1, _2, _forward, _reverse, etc.
+        paired_patterns = (
+            "_r1", "_r2",  # _r1, _r2
+            "_1", "_2",    # _1, _2 (after extension removed, these can be at end)
+            "_f", "_r",    # _f, _r
+            "_forward", "_reverse",
+        )
+        for pattern in paired_patterns:
+            if pattern in sample_name:
+                # Split on first occurrence and keep the part before
+                sample_name = sample_name.split(pattern)[0]
+                break
+
+        sample_names.add(sample_name)
+
+    return sorted(sample_names)
+
+
 def write_metadata_template(
     checklist: Checklist,
     path: Path,
     include_optional: bool = False,
+    sample_names: list[str] | None = None,
 ) -> None:
-    """Write a TSV metadata template for the chosen sample checklist."""
+    """Write a TSV metadata template for the chosen sample checklist.
+
+    If sample_names are provided, creates rows for each sample. Otherwise creates
+    a single placeholder row.
+    """
     selected_fields = [
         field for field in checklist.fields if include_optional or field.mandatory
     ]
@@ -242,7 +291,13 @@ def write_metadata_template(
         writer.writerow(["#checklist_accession", checklist.accession])
         writer.writerow(headers)
         writer.writerow(units)
-        writer.writerow(["sample_1", "TODO", "TODO", ""] + [""] * len(selected_fields))
+
+        # Generate rows for each sample or create a single placeholder
+        if sample_names:
+            for sample_name in sample_names:
+                writer.writerow([sample_name, "TODO", "TODO", ""] + [""] * len(selected_fields))
+        else:
+            writer.writerow(["sample_1", "TODO", "TODO", ""] + [""] * len(selected_fields))
 
 
 def read_metadata_tsv(path: Path) -> tuple[str, list[str], list[str], list[dict[str, str]]]:
@@ -906,8 +961,13 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
         "  Include optional checklist fields in the template?",
         default=False,
     )
+
+    # Extract sample names from discovered data files
+    data_files = discover_data_files(source_path, context)
+    sample_names = extract_sample_names(data_files) if data_files else None
+
     metadata_template = workspace / f"samples_{checklist.accession}.tsv"
-    write_metadata_template(checklist, metadata_template, include_optional=include_optional)
+    write_metadata_template(checklist, metadata_template, include_optional=include_optional, sample_names=sample_names)
     console.print(f"  [green]Metadata template written:[/green] {metadata_template}")
 
     scp_download_command = generate_scp_download_command(metadata_template)
