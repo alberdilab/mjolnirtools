@@ -2,6 +2,31 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.1.4 - 2026-06-14
+
+### Added
+
+- Webin-CLI is now downloaded and cached automatically on first use
+  (`~/.mjolnirtools/webin-cli/`). The wizard no longer asks users for the path to
+  the JAR file. The `WEBIN_CLI_JAR` environment variable still works as an
+  override. The download shows a rich progress bar with speed and ETA.
+- `mt transfer ena` now submits sample metadata directly from Python (no
+  intermediate bash script) and displays a live per-sample progress table during
+  data upload. Each row shows the sample alias, file count, total size in MB, and
+  status (`pending` → `uploading...` → `✓ complete` / `✗ failed`).
+- `mt transfer ena` wizard now displays a preview table of the first 5 sample–file
+  assignments so users can visually verify that files are correctly matched to
+  samples before submission starts.
+- `submit_sample_registration()` is now a public function that posts sample XML to
+  the ENA Webin REST API and returns a boolean success flag.
+
+### Fixed
+
+- In the test-first submission path, production manifests were previously written
+  with `None` as the STUDY value because they were generated before the production
+  study was known. They are now generated after the user confirms the test
+  succeeded and provides a production study accession.
+
 ## 1.1.3 - 2026-06-14
 
 ### Added

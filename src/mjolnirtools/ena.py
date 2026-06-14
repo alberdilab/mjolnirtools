@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import base64
 import csv
+import json
 import os
 import pwd
 import shlex
 import shutil
+import subprocess
 import time
 import uuid
 import urllib.error
@@ -20,8 +22,10 @@ from pathlib import Path
 import click
 import typer
 from rich.console import Console
+from rich.live import Live
 from rich.padding import Padding
 from rich.panel import Panel
+from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn, TransferSpeedColumn
 from rich.table import Table
 
 from mjolnirtools import config as config_module
@@ -34,6 +38,8 @@ WEBIN_PROD_SUBMIT_URL = "https://www.ebi.ac.uk/ena/submit/drop-box/submit/"
 VALID_CONTEXTS = ("reads", "genome", "transcriptome", "sequence")
 WEBIN_CLI_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/general-guide/webin-cli.html"
 WEBIN_CLI_RELEASES_URL = "https://github.com/enasequence/webin-cli/releases"
+WEBIN_CLI_GITHUB_API = "https://api.github.com/repos/enasequence/webin-cli/releases/latest"
+WEBIN_CLI_CACHE_DIR = Path.home() / ".mjolnirtools" / "webin-cli"
 STUDY_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/study.html"
 STUDY_PROGRAMMATIC_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/study/programmatic.html"
 SAMPLE_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/samples.html"
@@ -740,6 +746,35 @@ def submit_project_registration(
     return parse_project_accession_from_receipt(receipt_text)
 
 
+def submit_sample_registration(
+    *,
+    credentials: config_module.EnaCredentials,
+    submission_xml: Path,
+    sample_xml: Path,
+    receipt_xml: Path,
+    test_service: bool,
+    timeout: int = 60,
+) -> bool:
+    """Submit sample XML to ENA Webin REST API. Returns True on success."""
+    submit_url = WEBIN_TEST_SUBMIT_URL if test_service else WEBIN_PROD_SUBMIT_URL
+    body, content_type = _encode_multipart_form({
+        "SUBMISSION": submission_xml,
+        "SAMPLE": sample_xml,
+    })
+    request = urllib.request.Request(submit_url, data=body, method="POST")
+    request.add_header("Content-Type", content_type)
+    request.add_header("Authorization", _basic_auth_header(credentials.username, credentials.password))
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            receipt_text = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        receipt_text = exc.read().decode("utf-8", errors="replace")
+
+    receipt_xml.write_text(receipt_text)
+    return 'success="true"' in receipt_text
+
+
 def parse_project_accession_from_receipt(receipt_text: str) -> str:
     """Extract the project accession from an ENA project-registration receipt."""
     root = ET.fromstring(receipt_text)
@@ -1356,14 +1391,14 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
     sample_aliases = [s["sample_alias"] for s in samples]
     alias_to_files = match_files_to_aliases(data_files, sample_aliases)
 
-    manifests: list[Path] = []
+    manifests: list[tuple[str, Path]] = []
     for alias, alias_files in alias_to_files.items():
         if not alias_files:
             console.print(f"  [yellow]Warning:[/yellow] No data files matched alias '{alias}' — skipping manifest.")
             continue
         manifest_path = workspace / f"{context}_{alias}.manifest.txt"
         write_manifest_template(context, source_path, alias_files, template_study, alias, manifest_path, library=library)
-        manifests.append(manifest_path)
+        manifests.append((alias, manifest_path))
         console.print(f"  [green]Manifest written:[/green] {manifest_path} ({len(alias_files)} file(s))")
 
     all_matched = {f for fs in alias_to_files.values() for f in fs}
@@ -1380,35 +1415,26 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
         return 1
 
     if context == "reads":
-        console.print(
-            "\n  Review the manifests above and verify that files are assigned to the correct sample."
-        )
+        preview_table = Table(title="Sample–file assignment (first 5)", show_lines=True)
+        preview_table.add_column("Sample alias", style="cyan", no_wrap=True)
+        preview_table.add_column("File(s)", style="white")
+        for alias in list(alias_to_files.keys())[:5]:
+            files = alias_to_files[alias]
+            preview_table.add_row(alias, "\n".join(f.name for f in files) if files else "[yellow]none[/yellow]")
+        console.print()
+        console.print(preview_table)
+        console.print("  Verify that the files above are assigned to the correct sample.")
     else:
         console.print(
             "\n  Review the manifests above. Replace every TODO with the "
             "submission metadata required for the selected ENA context."
         )
     click.pause("  Review the manifests, then press Enter to continue...")
-    if any(manifest_has_todos(m) for m in manifests):
+    if any(manifest_has_todos(m) for _, m in manifests):
         console.print("[bold red]Error:[/bold red] One or more manifests still contain TODO values.")
         return 1
 
-    production_manifests = manifests
-    if test_first:
-        production_manifests = []
-        for m in manifests:
-            pm = workspace / f"{m.stem}.production.manifest.txt"
-            try:
-                write_manifest_for_study(m, pm, production_study)
-            except ValueError as exc:
-                console.print(f"[bold red]Error:[/bold red] {exc}")
-                return 1
-            production_manifests.append(pm)
-        console.print(
-            f"  [green]{len(production_manifests)} production manifest(s) written.[/green]"
-        )
-
-    webin_cli_jar = _prompt_webin_cli_jar(console)
+    webin_cli_jar = _ensure_webin_cli_jar(console)
     if webin_cli_jar is None:
         return 1
     if shutil.which("java") is None:
@@ -1416,58 +1442,57 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
         return 1
 
     input_dir = source_path.parent if source_path.is_file() else source_path
-    log_path = workspace / "submit-ena.log"
+    log_dir = workspace / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     if test_first:
-        test_script_path = workspace / "submit-ena-test.sh"
+        # Submit sample metadata to test service
         test_receipt_xml = workspace / "sample-receipt-test.xml"
-        write_submission_script(
-            script_path=test_script_path,
-            credentials_path=credentials.path,
-            sample_xml=sample_xml,
+        console.print()
+        console.print("  [bold]Submitting sample metadata to ENA test service...[/bold]")
+        metadata_ok = submit_sample_registration(
+            credentials=credentials,
             submission_xml=submission_xml,
+            sample_xml=sample_xml,
             receipt_xml=test_receipt_xml,
-            log_path=log_path,
-            webin_cli_jar=webin_cli_jar,
+            test_service=True,
+        )
+        if not metadata_ok:
+            console.print(
+                f"  [bold red]Error:[/bold red] Sample metadata submission to test service failed.\n"
+                f"  Receipt: {test_receipt_xml}"
+            )
+            return 1
+        console.print("  [green]Sample metadata submitted.[/green]")
+
+        # Submit data files to test service with per-sample progress
+        console.print()
+        test_ok = _run_sample_submissions_with_progress(
+            console=console,
+            jar=webin_cli_jar,
+            credentials=credentials,
             context=context,
-            manifests=manifests,
+            sample_manifests=manifests,
+            alias_to_files=alias_to_files,
             input_dir=input_dir,
             output_dir=workspace / "webin-cli-output-test",
             test_service=True,
-            source=source_path,
-            keep_original=True,
+            log_dir=log_dir,
         )
+        if not test_ok:
+            return 1
 
-        console.print()
-        console.print(f"  Workspace: [bold]{workspace}[/bold]")
-        console.print(f"  Test script: [bold]{test_script_path}[/bold]")
-        console.print(f"  Log: [bold]{log_path}[/bold]")
-
-        if shell.is_inside_screen():
-            current = os.environ.get("STY", "unknown")
-            console.print(f"[bold green]Already inside screen session:[/bold green] [bold]{current}[/bold]")
-            shell.run_command(
-                build_submission_runner_command(test_script_path, "", inside_screen=True)
-            )
-        else:
-            session_name = f"mt-transfer-ena-test-{timestamp}"
-            console.print(f"[bold green]Opening screen session:[/bold green] [bold]{session_name}[/bold]")
-            console.print(f"  Reattach with: [bold]screen -r {session_name}[/bold]")
-            shell.run_command(
-                build_submission_runner_command(test_script_path, session_name, inside_screen=False)
-            )
-
-        # Prompt user to verify test succeeded before proceeding to production
+        # Confirm production submission
         console.print()
         if not typer.confirm(
-            "[bold]The test service worked - would you like to submit the definitive BioProject?[/bold]\n"
+            "[bold]Test service succeeded — submit to ENA production?[/bold]\n"
             "[yellow](This action cannot be undone)[/yellow]",
-            default=False
+            default=False,
         ):
-            console.print("[green]Test submission complete. Skipping production submission.[/green]")
+            console.print("[green]Test submission complete. Skipping production.[/green]")
             return 0
 
-        # User wants production - now ask for production study
+        # Get production study now that test has succeeded
         console.print("\n[bold]Production service study[/bold]")
         production_study = _select_or_register_study(
             console=console,
@@ -1478,81 +1503,104 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
         if production_study is None:
             return 1
 
-        # Generate and run production script
-        production_script_path = workspace / "submit-ena-production.sh"
-        production_receipt_xml = workspace / "sample-receipt-production.xml"
-        write_submission_script(
-            script_path=production_script_path,
-            credentials_path=credentials.path,
-            sample_xml=sample_xml,
+        # Generate production manifests now that we have the study accession
+        production_manifests: list[tuple[str, Path]] = []
+        for alias, m in manifests:
+            pm = workspace / f"{m.stem}.production.manifest.txt"
+            try:
+                write_manifest_for_study(m, pm, production_study)
+            except ValueError as exc:
+                console.print(f"[bold red]Error:[/bold red] {exc}")
+                return 1
+            production_manifests.append((alias, pm))
+        console.print(f"  [green]{len(production_manifests)} production manifest(s) written.[/green]")
+
+        # Submit sample metadata to production
+        prod_receipt_xml = workspace / "sample-receipt-production.xml"
+        console.print()
+        console.print("  [bold]Submitting sample metadata to ENA production...[/bold]")
+        prod_metadata_ok = submit_sample_registration(
+            credentials=credentials,
             submission_xml=submission_xml,
-            receipt_xml=production_receipt_xml,
-            log_path=log_path,
-            webin_cli_jar=webin_cli_jar,
+            sample_xml=sample_xml,
+            receipt_xml=prod_receipt_xml,
+            test_service=False,
+        )
+        if not prod_metadata_ok:
+            console.print(
+                f"  [bold red]Error:[/bold red] Sample metadata submission to production failed.\n"
+                f"  Receipt: {prod_receipt_xml}"
+            )
+            return 1
+        console.print("  [green]Sample metadata submitted.[/green]")
+
+        # Submit data files to production with per-sample progress
+        console.print()
+        prod_ok = _run_sample_submissions_with_progress(
+            console=console,
+            jar=webin_cli_jar,
+            credentials=credentials,
             context=context,
-            manifests=production_manifests,
+            sample_manifests=production_manifests,
+            alias_to_files=alias_to_files,
             input_dir=input_dir,
             output_dir=workspace / "webin-cli-output-production",
             test_service=False,
-            source=source_path,
-            keep_original=keep_original,
+            log_dir=log_dir,
         )
+        if not prod_ok:
+            return 1
 
-        console.print()
-        console.print(f"  Production script: [bold]{production_script_path}[/bold]")
-
-        if shell.is_inside_screen():
-            current = os.environ.get("STY", "unknown")
-            console.print(f"[bold green]Already inside screen session:[/bold green] [bold]{current}[/bold]")
-            return shell.run_command(
-                build_submission_runner_command(production_script_path, "", inside_screen=True)
-            )
-
-        session_name = f"mt-transfer-ena-prod-{timestamp}"
-        console.print(f"[bold green]Opening screen session:[/bold green] [bold]{session_name}[/bold]")
-        console.print(f"  Reattach with: [bold]screen -r {session_name}[/bold]")
-        return shell.run_command(
-            build_submission_runner_command(production_script_path, session_name, inside_screen=False)
-        )
+        if not keep_original:
+            if source_path.is_dir():
+                shutil.rmtree(source_path)
+            else:
+                source_path.unlink()
+        console.print("[bold green]ENA transfer complete.[/bold green]")
+        return 0
 
     else:
         # Direct production submission (no test)
-        script_path = workspace / "submit-ena.sh"
-        receipt_xml = workspace / "sample-receipt.xml"
-        write_submission_script(
-            script_path=script_path,
-            credentials_path=credentials.path,
-            sample_xml=sample_xml,
+        console.print()
+        console.print("  [bold]Submitting sample metadata to ENA...[/bold]")
+        metadata_ok = submit_sample_registration(
+            credentials=credentials,
             submission_xml=submission_xml,
+            sample_xml=sample_xml,
             receipt_xml=receipt_xml,
-            log_path=log_path,
-            webin_cli_jar=webin_cli_jar,
+            test_service=False,
+        )
+        if not metadata_ok:
+            console.print(
+                f"  [bold red]Error:[/bold red] Sample metadata submission failed.\n"
+                f"  Receipt: {receipt_xml}"
+            )
+            return 1
+        console.print("  [green]Sample metadata submitted.[/green]")
+
+        console.print()
+        data_ok = _run_sample_submissions_with_progress(
+            console=console,
+            jar=webin_cli_jar,
+            credentials=credentials,
             context=context,
-            manifests=manifests,
+            sample_manifests=manifests,
+            alias_to_files=alias_to_files,
             input_dir=input_dir,
             output_dir=workspace / "webin-cli-output",
             test_service=False,
-            source=source_path,
-            keep_original=keep_original,
+            log_dir=log_dir,
         )
+        if not data_ok:
+            return 1
 
-        console.print()
-        console.print(f"  Workspace: [bold]{workspace}[/bold]")
-        console.print(f"  Script:    [bold]{script_path}[/bold]")
-        console.print(f"  Log:       [bold]{log_path}[/bold]")
-        if shell.is_inside_screen():
-            current = os.environ.get("STY", "unknown")
-            console.print(f"[bold green]Already inside screen session:[/bold green] [bold]{current}[/bold]")
-            return shell.run_command(
-                build_submission_runner_command(script_path, "", inside_screen=True)
-            )
-
-        session_name = f"mt-transfer-ena-{timestamp}"
-        console.print(f"[bold green]Opening screen session:[/bold green] [bold]{session_name}[/bold]")
-        console.print(f"  Reattach with: [bold]screen -r {session_name}[/bold]")
-        return shell.run_command(
-            build_submission_runner_command(script_path, session_name, inside_screen=False)
-        )
+        if not keep_original:
+            if source_path.is_dir():
+                shutil.rmtree(source_path)
+            else:
+                source_path.unlink()
+        console.print("[bold green]ENA transfer complete.[/bold green]")
+        return 0
 
 
 def _select_webin_credentials(console: Console) -> config_module.EnaCredentials | None:
@@ -1765,29 +1813,182 @@ def _prompt_study_hold_date(console: Console, *, indent: int = 0) -> str | None:
         return value
 
 
-def _prompt_webin_cli_jar(console: Console) -> Path | None:
-    default = os.environ.get("WEBIN_CLI_JAR", "")
-    _print_prompt_help(
-        console,
-        "Webin-CLI jar path",
-        "Webin-CLI is ENA's Java submission tool. Enter the path to the downloaded "
-        ".jar file, or set WEBIN_CLI_JAR before running the wizard.\n"
-        f"  Download: {WEBIN_CLI_RELEASES_URL}",
-        show_prompt_tip=False,
-    )
-    if default:
-        jar_text = typer.prompt("  Webin-CLI jar path", default=default).strip()
-    else:
-        jar_text = typer.prompt("  Webin-CLI jar path").strip()
-    jar = Path(jar_text).expanduser().resolve()
-    if jar.exists() and jar.is_file():
+
+def _ensure_webin_cli_jar(console: Console) -> Path | None:
+    """Return a Webin-CLI JAR path, downloading and caching it if not already present."""
+    env_jar = os.environ.get("WEBIN_CLI_JAR", "").strip()
+    if env_jar:
+        jar = Path(env_jar).expanduser().resolve()
+        if jar.exists() and jar.is_file():
+            console.print(f"  [green]Webin-CLI:[/green] {jar.name} (from WEBIN_CLI_JAR)")
+            return jar
+        console.print(f"  [yellow]Warning:[/yellow] WEBIN_CLI_JAR={env_jar} not found; will download instead.")
+
+    WEBIN_CLI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cached = sorted(WEBIN_CLI_CACHE_DIR.glob("webin-cli-*.jar"))
+    if cached:
+        jar = cached[-1]
+        console.print(f"  [green]Webin-CLI:[/green] {jar.name} (cached)")
         return jar
-    console.print(
-        "[bold red]Error:[/bold red] Webin-CLI jar not found.\n"
-        "  Download the latest webin-cli jar from https://github.com/enasequence/webin-cli/releases\n"
-        "  and rerun the wizard with WEBIN_CLI_JAR set or provide the path when prompted."
-    )
-    return None
+
+    return _download_webin_cli_jar(console)
+
+
+def _download_webin_cli_jar(console: Console) -> Path | None:
+    """Download the latest Webin-CLI JAR from GitHub Releases with a progress bar."""
+    console.print("  [dim]Webin-CLI not found locally — fetching latest release info...[/dim]")
+    try:
+        req = urllib.request.Request(
+            WEBIN_CLI_GITHUB_API,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "mjolnirtools"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            release = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        console.print(f"  [bold red]Error:[/bold red] Could not fetch Webin-CLI release info: {exc}")
+        console.print(f"  Download manually: {WEBIN_CLI_RELEASES_URL}")
+        console.print("  Then set:  export WEBIN_CLI_JAR=/path/to/webin-cli.jar")
+        return None
+
+    assets = release.get("assets", [])
+    jar_asset = next((a for a in assets if a["name"].endswith(".jar")), None)
+    if not jar_asset:
+        console.print("  [bold red]Error:[/bold red] No JAR asset found in latest Webin-CLI release.")
+        return None
+
+    jar_name = jar_asset["name"]
+    jar_url = jar_asset["browser_download_url"]
+    jar_size = jar_asset.get("size", 0)
+    dest = WEBIN_CLI_CACHE_DIR / jar_name
+
+    console.print(f"  Downloading {jar_name} ({jar_size // 1024 // 1024} MB) ...")
+    try:
+        with urllib.request.urlopen(jar_url, timeout=300) as response:
+            with Progress(
+                TextColumn("  [cyan]{task.description}"),
+                BarColumn(),
+                DownloadColumn(),
+                TransferSpeedColumn(),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress:
+                task = progress.add_task(jar_name, total=jar_size or None)
+                with dest.open("wb") as out:
+                    while True:
+                        chunk = response.read(65536)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        progress.update(task, advance=len(chunk))
+    except Exception as exc:
+        console.print(f"  [bold red]Error:[/bold red] Download failed: {exc}")
+        if dest.exists():
+            dest.unlink()
+        return None
+
+    console.print(f"  [green]Webin-CLI downloaded and cached:[/green] {dest}")
+    return dest
+
+
+def _run_manifest_webin_cli(
+    jar: Path,
+    credentials: config_module.EnaCredentials,
+    context: str,
+    manifest: Path,
+    input_dir: Path,
+    output_dir: Path,
+    test_service: bool,
+) -> tuple[bool, str]:
+    """Run Webin-CLI for one manifest. Returns (success, combined_output)."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "java", "-jar", str(jar),
+        "-context", context,
+        "-userName", credentials.username,
+        "-password", credentials.password,
+        "-manifest", str(manifest),
+        "-inputDir", str(input_dir),
+        "-outputDir", str(output_dir),
+        "-submit",
+    ]
+    if test_service:
+        cmd.append("-test")
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=7200)
+        return result.returncode == 0, result.stdout + "\n" + result.stderr
+    except subprocess.TimeoutExpired:
+        return False, "ERROR: Webin-CLI timed out after 2 hours."
+    except Exception as exc:
+        return False, f"ERROR: {exc}"
+
+
+def _run_sample_submissions_with_progress(
+    console: Console,
+    jar: Path,
+    credentials: config_module.EnaCredentials,
+    context: str,
+    sample_manifests: list[tuple[str, Path]],
+    alias_to_files: dict[str, list[Path]],
+    input_dir: Path,
+    output_dir: Path,
+    test_service: bool,
+    log_dir: Path,
+) -> bool:
+    """Run Webin-CLI per sample and display a live per-sample status table."""
+    aliases = [alias for alias, _ in sample_manifests]
+    statuses: dict[str, str] = {a: "pending" for a in aliases}
+
+    def _status_cell(s: str) -> str:
+        return {
+            "pending": "[dim]pending[/dim]",
+            "running": "[yellow]uploading...[/yellow]",
+            "done": "[green]✓ complete[/green]",
+            "failed": "[bold red]✗ failed[/bold red]",
+        }.get(s, s)
+
+    def _build_table() -> Table:
+        t = Table(title="ENA Data Submission", show_lines=True)
+        t.add_column("Sample", style="cyan", no_wrap=True)
+        t.add_column("Files", justify="right")
+        t.add_column("Size (MB)", justify="right")
+        t.add_column("Status")
+        for alias in aliases:
+            files = alias_to_files.get(alias, [])
+            try:
+                total_mb = sum(f.stat().st_size for f in files if f.exists()) / 1024 / 1024
+            except OSError:
+                total_mb = 0.0
+            t.add_row(alias, str(len(files)), f"{total_mb:.1f}", _status_cell(statuses[alias]))
+        return t
+
+    all_ok = True
+    with Live(_build_table(), console=console, refresh_per_second=4) as live:
+        for alias, manifest in sample_manifests:
+            statuses[alias] = "running"
+            live.update(_build_table())
+
+            success, output = _run_manifest_webin_cli(
+                jar=jar,
+                credentials=credentials,
+                context=context,
+                manifest=manifest,
+                input_dir=input_dir,
+                output_dir=output_dir / alias,
+                test_service=test_service,
+            )
+            log_file = log_dir / f"webin-cli-{alias}.log"
+            log_file.write_text(output)
+            statuses[alias] = "done" if success else "failed"
+            live.update(_build_table())
+            if not success:
+                all_ok = False
+
+    failed = [a for a in aliases if statuses[a] == "failed"]
+    if failed:
+        console.print(f"  [bold red]Failed:[/bold red] {', '.join(failed)}")
+        console.print(f"  Logs: {log_dir}")
+    return all_ok
 
 
 def _prompt_choice(prompt: str, choices: tuple[str, ...], default: str) -> str:
