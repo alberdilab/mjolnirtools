@@ -772,6 +772,40 @@ def build_submission_runner_command(
     return ["screen", "-dmS", session_name, "bash", str(script_path)]
 
 
+def _guess_pairing(files: list[Path]) -> str:
+    """Guess if files are paired or single based on naming patterns."""
+    if not files:
+        return "single"
+
+    paired_indicators = {"_r1", "_r2", "_1.", "_2.", "_f.", "_r.", "_forward", "_reverse"}
+    names_lower = {f.name.lower() for f in files}
+
+    has_paired = any(indicator in name for name in names_lower for indicator in paired_indicators)
+    if has_paired:
+        return "paired"
+
+    return "single"
+
+
+def _report_file_detection(console: Console, files: list[Path], max_show: int = 3) -> None:
+    """Report detected files with count, pairing guess, and sample names."""
+    if not files:
+        return
+
+    file_count = len(files)
+    pairing = _guess_pairing(files)
+
+    file_names = [f.name for f in files[:max_show]]
+    files_text = ", ".join(f"[cyan]{name}[/cyan]" for name in file_names)
+
+    if file_count > max_show:
+        files_text += f", ... ([yellow]+{file_count - max_show} more[/yellow])"
+
+    console.print()
+    console.print(f"  [green]Detected {file_count} file(s)[/green] ([bold]{pairing}[/bold])")
+    console.print(f"  Sample: {files_text}")
+
+
 def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
     """Run the interactive ENA submission wizard."""
     console = Console()
@@ -924,6 +958,7 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
 
     sample_alias = _select_sample_alias(console, samples)
     data_files = discover_data_files(source_path, context)
+    _report_file_detection(console, data_files)
     manifest = workspace / f"{context}.manifest.txt"
     write_manifest_template(context, source_path, data_files, template_study, sample_alias, manifest)
     console.print(f"  [green]Webin-CLI manifest template written:[/green] {manifest}")

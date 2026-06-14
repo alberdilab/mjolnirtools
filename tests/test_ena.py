@@ -535,6 +535,79 @@ class EnaTests(unittest.TestCase):
             discovered = ena.auto_discover_source(base)
             self.assertEqual(discovered, base)
 
+    def test_guess_pairing_detects_paired_r1_r2_notation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            files = [
+                base / "sample_R1.fastq",
+                base / "sample_R2.fastq",
+            ]
+            for f in files:
+                f.touch()
+
+            pairing = ena._guess_pairing(files)
+            self.assertEqual(pairing, "paired")
+
+    def test_guess_pairing_detects_paired_underscore_notation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            files = [
+                base / "sample_1.fq.gz",
+                base / "sample_2.fq.gz",
+            ]
+            for f in files:
+                f.touch()
+
+            pairing = ena._guess_pairing(files)
+            self.assertEqual(pairing, "paired")
+
+    def test_guess_pairing_detects_single_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            files = [base / "sample.fastq"]
+            files[0].touch()
+
+            pairing = ena._guess_pairing(files)
+            self.assertEqual(pairing, "single")
+
+    def test_guess_pairing_empty_list_returns_single(self):
+        pairing = ena._guess_pairing([])
+        self.assertEqual(pairing, "single")
+
+    def test_report_file_detection_shows_count_and_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            files = [
+                base / "sample_R1.fastq",
+                base / "sample_R2.fastq",
+                base / "sample_R1_trimmed.fastq",
+            ]
+            for f in files:
+                f.touch()
+
+            console = Console(file=StringIO(), width=100)
+            ena._report_file_detection(console, files)
+            output = console.file.getvalue()
+
+            self.assertIn("3 file(s)", output)
+            self.assertIn("paired", output)
+            self.assertIn("sample_R1.fastq", output)
+            self.assertIn("sample_R2.fastq", output)
+
+    def test_report_file_detection_truncates_long_lists(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            files = [base / f"file_{i}.fastq" for i in range(10)]
+            for f in files:
+                f.touch()
+
+            console = Console(file=StringIO(), width=100)
+            ena._report_file_detection(console, files, max_show=3)
+            output = console.file.getvalue()
+
+            self.assertIn("10 file(s)", output)
+            self.assertIn("+7 more", output)
+
 
 if __name__ == "__main__":
     unittest.main()
