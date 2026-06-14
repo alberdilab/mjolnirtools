@@ -2,6 +2,37 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.1.0 - 2026-06-14
+
+### Added
+
+- `mt transfer ena <path>` is now an interactive ENA Webin submission wizard.
+  It selects a sample checklist, writes a checklist-based TSV metadata
+  template, accepts the completed TSV, generates sample/submission XML and a
+  Webin-CLI manifest, then runs the ENA metadata and data submission. The final
+  submission runs in a detached GNU Screen session named
+  `mt-transfer-ena-YYYYMMDD-HHMMSS` unless the command is already being run
+  inside Screen. The wizard can also register a new ENA study/BioProject when
+  the user does not already have one, then use the returned `PRJEB...`
+  accession for the submission. Test-first mode is now the default; when the
+  test submission succeeds, the generated job automatically reruns the same
+  validated metadata and manifest against ENA production.
+- `mt config ena` interactive wizard to set up Webin credentials for ENA
+  submissions. Can store multiple Webin users; when more than one user is
+  configured, `mt transfer ena <path>` asks which user to submit with.
+- `mt move` and `mt transfer` command groups with unified documentation for
+  file operations (move/transfer to ERDA, transfer to ENA).
+
+### Changed
+
+- ENA transfers now go through metadata preparation and Webin-CLI
+  validation/submission instead of raw FTPS-only uploads, so checklist metadata
+  and required manifests are part of the workflow.
+- Refactored command structure with separate `mt move` and `mt transfer` groups
+  for better discoverability and unified help for file operations.
+- Enhanced documentation for move and transfer commands with detailed steps and
+  examples.
+
 ## 1.0.6 - 2026-06-11
 
 ### Added

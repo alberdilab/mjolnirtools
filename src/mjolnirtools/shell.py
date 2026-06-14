@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TextIO
 
 
@@ -326,6 +327,58 @@ def build_move_erda_script(src: str, erda_dest: str, keep_original: bool) -> str
         f"if {sync_part}; then "
         f"rm -rf {q(src)} && echo 'Transfer complete. Source deleted.'; "
         f"else echo 'ERROR: Transfer failed. Source was NOT deleted.'; fi"
+    )
+
+
+def build_transfer_ena_script(src: str, keep_original: bool) -> str:
+    """Build the bash script string for the FTPS-based upload to ENA Webin."""
+    def q(s: str) -> str:
+        return '"' + s.replace('"', '\\"') + '"'
+
+    creds = str(Path.home() / ".config" / "ena" / "credentials")
+    ftp_host = "webin2.ebi.ac.uk"
+
+    # Credentials are read at runtime so the password never appears as a
+    # literal argument in the process table.
+    upload_block = "\n".join([
+        f'ENA_USER=$(grep "^username=" {q(creds)} | cut -d= -f2-)',
+        f'ENA_PASS=$(grep "^password=" {q(creds)} | cut -d= -f2-)',
+        f'SRC={q(src)}',
+        "UPLOAD_RC=1",
+        'if [ -f "$SRC" ]; then',
+        f'  curl --ftp-ssl -T "$SRC" "ftp://{ftp_host}/" --user "$ENA_USER:$ENA_PASS" --progress-bar',
+        "  UPLOAD_RC=$?",
+        'elif [ -d "$SRC" ]; then',
+        "  UPLOAD_RC=0",
+        '  while IFS= read -r -d "" file; do',
+        '    rel="${file#"$SRC"/}"',
+        f'    curl --ftp-ssl -T "$file" "ftp://{ftp_host}/${{rel}}" --user "$ENA_USER:$ENA_PASS" --progress-bar --create-dirs',
+        "    RC=$?; [ $RC -ne 0 ] && UPLOAD_RC=$RC",
+        "  done < <(find \"$SRC\" -type f -print0)",
+        "else",
+        '  echo "ERROR: Source not found: $SRC"',
+        "  exit 1",
+        "fi",
+    ])
+
+    if keep_original:
+        return (
+            upload_block + "\n"
+            "if [ $UPLOAD_RC -eq 0 ]; then\n"
+            "  echo 'Transfer complete. Source kept.'\n"
+            "else\n"
+            "  echo 'ERROR: Transfer failed.'\n"
+            "  exit $UPLOAD_RC\n"
+            "fi"
+        )
+    return (
+        upload_block + "\n"
+        f'if [ $UPLOAD_RC -eq 0 ]; then\n'
+        f'  rm -rf {q(src)} && echo "Transfer complete. Source deleted."\n'
+        f'else\n'
+        f'  echo "ERROR: Transfer failed. Source was NOT deleted."\n'
+        f'  exit $UPLOAD_RC\n'
+        f'fi'
     )
 
 

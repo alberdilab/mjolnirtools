@@ -470,6 +470,22 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertIn("mt conda list does not accept an environment name", stderr.getvalue())
 
+    def test_transfer_ena_dispatches_submission_wizard(self):
+        with mock.patch("mjolnirtools.cli.config_module._config_has_ena", return_value=True):
+            with mock.patch("mjolnirtools.cli.ena.run_transfer_wizard", return_value=0) as wizard:
+                exit_code = cli.main(["transfer", "ena", "reads"])
+
+        self.assertEqual(exit_code, 0)
+        wizard.assert_called_once_with("reads", True)
+
+    def test_transfer_ena_delete_passes_keep_original_false(self):
+        with mock.patch("mjolnirtools.cli.config_module._config_has_ena", return_value=True):
+            with mock.patch("mjolnirtools.cli.ena.run_transfer_wizard", return_value=0) as wizard:
+                exit_code = cli.main(["transfer", "ena", "reads", "--delete"])
+
+        self.assertEqual(exit_code, 0)
+        wizard.assert_called_once_with("reads", False)
+
     def test_system_resources_prints_usage_progress_rows(self):
         scontrol_output = (
             "NodeName=node001 Arch=x86_64 CoresPerSocket=32\n"
@@ -1108,6 +1124,8 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertIn("ERDA is not configured", stderr.getvalue())
+        self.assertIn("mt config erda", stderr.getvalue())
+        self.assertNotIn("Usage:", stderr.getvalue())
 
     def test_move_rejects_unknown_destination(self):
         stderr = io.StringIO()
@@ -1116,6 +1134,17 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertIn("mt move scratch", stderr.getvalue())
+
+    def test_transfer_ena_rejects_unconfigured_ena_without_usage(self):
+        stderr = io.StringIO()
+        with mock.patch("mjolnirtools.cli.config_module._config_has_ena", return_value=False):
+            with redirect_stderr(stderr):
+                exit_code = cli.main(["transfer", "ena", "/local/data/project"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("ENA is not configured", stderr.getvalue())
+        self.assertIn("mt config ena", stderr.getvalue())
+        self.assertNotIn("Usage:", stderr.getvalue())
 
 
 if __name__ == "__main__":

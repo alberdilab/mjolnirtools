@@ -8,7 +8,7 @@ import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import click
 import typer
@@ -20,6 +20,7 @@ from rich.text import Text
 
 from mjolnirtools import __version__
 from mjolnirtools import config as config_module
+from mjolnirtools import ena
 from mjolnirtools import shell
 from mjolnirtools import slurm
 
@@ -62,6 +63,7 @@ SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
     "config": [
         "Subcommands:",
         "  mt config erda",
+        "  mt config ena",
         "  mt config github",
         "  mt config ncbi",
         "  mt config zenodo",
@@ -70,6 +72,11 @@ SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
         "Subcommands:",
         "  mt move scratch <path>",
         "  mt move erda <path> <erda-dest>",
+    ],
+    "transfer": [
+        "Subcommands:",
+        "  mt transfer erda <path> <erda-dest>",
+        "  mt transfer ena [path]",
     ],
     "conda": [
         "Subcommands:",
@@ -121,6 +128,14 @@ SHORTCUT_LINES = [
     "  mt partition <name> = mt system partition <name>",
 ]
 
+
+def _exit_with_missing_config(service: str, setup_command: str) -> NoReturn:
+    """Print an actionable configuration error without showing usage help."""
+    console = Console(stderr=True)
+    console.print(f"[bold red]Error:[/bold red] {service} is not configured.")
+    console.print(f"Run [bold]{setup_command}[/bold] first.")
+    raise typer.Exit(2)
+
 SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
     (
         "Job monitoring",
@@ -169,12 +184,14 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
     (
         "File operations",
         (
-            "Move files and directories between project locations. "
-            "Transfers run inside a background screen session using rsync."
+            "Move or transfer files between project locations and remote services. "
+            "Operations run inside a background screen session when they are long-running."
         ),
         [
             ("mt move scratch <path>", "Move a path from people/ to scratch/ via rsync"),
-            ("mt move erda <path> <erda-dest>", "Move a local path to a directory on ERDA via rsync"),
+            ("mt move erda <path> <erda-dest>", "Move a local path to ERDA via rsync (deletes source)"),
+            ("mt transfer erda <path> <erda-dest>", "Upload a local path to ERDA via rsync (keeps source)"),
+            ("mt transfer ena [path]", "Submit data to ENA Webin (auto-discovers sequence files if no path given)"),
         ],
     ),
     (
@@ -226,6 +243,7 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
         ),
         [
             ("mt config erda", "Set up SSH/SFTP access to ERDA (erda.dk)"),
+            ("mt config ena", "Set up Webin/FTP access to ENA (ebi.ac.uk)"),
             ("mt config github", "Set up SSH access to GitHub (github.com)"),
             ("mt config ncbi", "Configure NCBI API key and SRA Toolkit cache"),
             ("mt config zenodo", "Configure Zenodo personal access token"),
@@ -1178,9 +1196,7 @@ def move_command(
         if erda_dest is None:
             raise click.UsageError("mt move erda requires a destination path on ERDA.")
         if not config_module._config_has_erda(config_module._SSH_CONFIG):
-            raise click.UsageError(
-                "ERDA is not configured. Run 'mt config erda' first."
-            )
+            _exit_with_missing_config("ERDA", "mt config erda")
 
         script = shell.build_move_erda_script(source, erda_dest, keep_original)
 
@@ -1217,6 +1233,98 @@ def move_command(
 
 
 @app.command(
+    name="transfer",
+    add_help_option=False,
+    rich_help_panel="File operations",
+    help="Upload files to a remote service in a background screen session (keeps source by default).",
+)
+def transfer_command(
+    destination: Annotated[
+        str,
+        typer.Argument(
+            help="Destination: erda or ena.",
+            show_default=False,
+        ),
+    ],
+    source: Annotated[
+        str | None,
+        typer.Argument(
+            help="Local path to upload. For 'ena', auto-discovers sequence files if omitted.",
+            show_default=False,
+        ),
+    ] = None,
+    erda_dest: Annotated[
+        str | None,
+        typer.Argument(
+            help="Destination directory on ERDA (required for 'erda').",
+            show_default=False,
+        ),
+    ] = None,
+    delete: Annotated[
+        bool,
+        typer.Option(
+            "--delete",
+            help="Delete the source after a successful transfer.",
+        ),
+    ] = False,
+) -> None:
+    """Upload a local path to ERDA or ENA in a background screen session."""
+    keep_original = not delete
+    console = Console()
+
+    if destination == "erda":
+        if source is None:
+            raise click.UsageError("mt transfer erda requires a source path.")
+        if erda_dest is None:
+            raise click.UsageError("mt transfer erda requires a destination path on ERDA.")
+        if not config_module._config_has_erda(config_module._SSH_CONFIG):
+            _exit_with_missing_config("ERDA", "mt config erda")
+
+        script = shell.build_move_erda_script(source, erda_dest, keep_original)
+
+        console.print()
+        if shell.is_inside_screen():
+            current = os.environ.get("STY", "unknown")
+            console.print(f"[bold green]Already inside screen session:[/bold green] [bold]{current}[/bold]")
+            console.print(f"  Source:      [bold]{source}[/bold]")
+            console.print(f"  Destination: [bold]erda:{erda_dest}[/bold]")
+            if delete:
+                console.print("  [yellow]Source will be deleted after successful transfer.[/yellow]")
+            else:
+                console.print("  [cyan]Source will be kept after transfer.[/cyan]")
+            console.print("  [dim]Running transfer in the current session.[/dim]")
+            console.print()
+            command: list[str] = ["bash", "-c", script]
+        else:
+            session_name = f"mt-transfer-erda-{time.strftime('%Y%m%d-%H%M%S')}"
+            console.print(f"[bold green]Opening screen session:[/bold green] [bold]{session_name}[/bold]")
+            console.print(f"  Source:      [bold]{source}[/bold]")
+            console.print(f"  Destination: [bold]erda:{erda_dest}[/bold]")
+            if delete:
+                console.print("  [yellow]Source will be deleted after successful transfer.[/yellow]")
+            else:
+                console.print("  [cyan]Source will be kept after transfer.[/cyan]")
+            console.print("  [dim]The screen session will close automatically when done.[/dim]")
+            console.print()
+            command = shell.build_move_scratch_screen_command(session_name, script)
+
+    elif destination == "ena":
+        if erda_dest is not None:
+            raise click.UsageError("mt transfer ena does not accept a remote destination argument.")
+        if not config_module._config_has_ena():
+            _exit_with_missing_config("ENA", "mt config ena")
+
+        raise typer.Exit(ena.run_transfer_wizard(source, keep_original))
+
+    else:
+        raise click.UsageError(
+            "Use: mt transfer erda <path> <erda-dest>  or  mt transfer ena <path>"
+        )
+
+    raise typer.Exit(shell.run_command(command))
+
+
+@app.command(
     name="config",
     add_help_option=False,
     rich_help_panel="Configuration",
@@ -1226,7 +1334,7 @@ def config_command(
     service: Annotated[
         str,
         typer.Argument(
-            help="Service to configure: erda, github, ncbi, or zenodo.",
+            help="Service to configure: erda, ena, github, ncbi, or zenodo.",
             show_default=False,
         ),
     ] = "erda",
@@ -1234,13 +1342,15 @@ def config_command(
     """Run a configuration wizard for an external service."""
     if service == "erda":
         raise typer.Exit(config_module.run_erda_setup())
+    if service == "ena":
+        raise typer.Exit(config_module.run_ena_setup())
     if service == "github":
         raise typer.Exit(config_module.run_github_setup())
     if service == "ncbi":
         raise typer.Exit(config_module.run_ncbi_setup())
     if service == "zenodo":
         raise typer.Exit(config_module.run_zenodo_setup())
-    raise click.UsageError("Use one of: mt config erda, mt config github, mt config ncbi, mt config zenodo")
+    raise click.UsageError("Use one of: mt config erda, mt config ena, mt config github, mt config ncbi, mt config zenodo")
 
 
 @app.command(

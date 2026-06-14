@@ -9,7 +9,7 @@ key generation, credential storage, and connection testing locally, pausing
 only at steps that require browser action on the service's web interface.
 
 Configuration state is written to standard locations (``~/.ssh/config``,
-``~/.ncbi/``, ``~/.config/zenodo/``, and the shell profile) so other tools
+``~/.ncbi/``, ``~/.config/ena/``, ``~/.config/zenodo/``, and the shell profile) so other tools
 on the same system can use the same credentials without further setup.
 
 .. contents::
@@ -58,6 +58,39 @@ After setup:
    $ ssh erda
    $ sftp erda
    $ rsync -avh localfile erda:/path/
+
+``mt config ena``
+-----------------
+
+Set up ENA Webin credentials for checklist-based ENA submissions and Webin
+file transfer.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt config ena
+
+The wizard completes four steps:
+
+1. Guides you to create or open an ENA Webin submission account at
+   https://www.ebi.ac.uk/ena/submit/webin.
+2. Prompts for the Webin username and password.
+3. Writes the credentials to ``~/.config/ena/credentials`` as the default user
+   and to ``~/.config/ena/credentials.d/<webin-user>`` so multiple Webin users
+   can be saved.
+4. Optionally tests the FTP/TLS connection to ``webin2.ebi.ac.uk``.
+
+After setup:
+
+.. code-block:: console
+
+   $ mt transfer ena <path>
+
+The transfer command uses these credentials when submitting sample metadata to
+the Webin drop-box service and when running Webin-CLI for data submission. If
+multiple Webin users are configured, ``mt transfer ena`` asks which one to use
+before preparing the submission workspace.
 
 ``mt config github``
 --------------------

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ftplib
 import os
 import subprocess
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
@@ -17,6 +19,7 @@ from rich.panel import Panel
 ERDA_HOST = "io.erda.dk"
 ERDA_PORT = 22
 GITHUB_HOST = "github.com"
+ENA_FTP_HOST = "webin2.ebi.ac.uk"
 _SSH_DIR = Path.home() / ".ssh"
 _SSH_CONFIG = _SSH_DIR / "config"
 _ERDA_KEY_CANDIDATES = ["id_erda", "id_ed25519", "id_rsa"]
@@ -26,6 +29,19 @@ _NCBI_DIR = Path.home() / ".ncbi"
 _NCBI_SRA_CONFIG = _NCBI_DIR / "user-settings.mkfg"
 _ZENODO_CONFIG_DIR = Path.home() / ".config" / "zenodo"
 _ZENODO_TOKEN_FILE = _ZENODO_CONFIG_DIR / "token"
+_ENA_CONFIG_DIR = Path.home() / ".config" / "ena"
+_ENA_CREDENTIALS_FILE = _ENA_CONFIG_DIR / "credentials"
+_ENA_CREDENTIALS_DIR = _ENA_CONFIG_DIR / "credentials.d"
+_MJOLNIR_HPC_HOSTNAME = "mjolnirgate.unicph.domain"
+
+
+@dataclass(frozen=True)
+class EnaCredentials:
+    """Configured ENA Webin credentials."""
+
+    username: str
+    password: str
+    path: Path
 
 
 def _detect_shell_profile() -> Path:
@@ -193,6 +209,103 @@ def _test_github_connection() -> tuple[bool, str]:
     )
     combined = result.stdout + result.stderr
     return "successfully authenticated" in combined, combined.strip()
+
+
+def _config_has_ena() -> bool:
+    """Return True if ENA Webin credentials have been configured."""
+    return bool(_list_ena_credentials())
+
+
+def _read_ena_credentials() -> tuple[str, str]:
+    """Return (username, password) from the default ENA credentials."""
+    credentials = _list_ena_credentials()
+    if not credentials:
+        return "", ""
+    return credentials[0].username, credentials[0].password
+
+
+def _read_ena_credentials_file(path: Path) -> tuple[str, str]:
+    """Return (username, password) from one ENA credentials file."""
+    username = ""
+    password = ""
+    if not path.exists():
+        return username, password
+    for line in path.read_text().splitlines():
+        if line.startswith("username="):
+            username = line[len("username="):]
+        elif line.startswith("password="):
+            password = line[len("password="):]
+    return username, password
+
+
+def _list_ena_credentials() -> list[EnaCredentials]:
+    """Return all configured ENA Webin credentials, preserving default first."""
+    credentials: list[EnaCredentials] = []
+    seen: set[str] = set()
+
+    def add_from(path: Path) -> None:
+        username, password = _read_ena_credentials_file(path)
+        if not username or not password:
+            return
+        key = username.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        credentials.append(EnaCredentials(username=username, password=password, path=path))
+
+    add_from(_ENA_CREDENTIALS_FILE)
+    if _ENA_CREDENTIALS_DIR.exists():
+        for path in sorted(_ENA_CREDENTIALS_DIR.iterdir()):
+            if path.is_file():
+                add_from(path)
+    return credentials
+
+
+def _ena_credentials_path_for_username(username: str) -> Path:
+    """Return the per-user credentials path for a Webin username."""
+    safe = "".join(char if char.isalnum() or char in "._-" else "_" for char in username)
+    safe = safe.strip("._-") or "webin"
+    return _ENA_CREDENTIALS_DIR / safe
+
+
+def _write_ena_credentials_file(path: Path, username: str, password: str) -> None:
+    """Write one Webin credentials file with restricted permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"username={username}\npassword={password}\n")
+    path.chmod(0o600)
+
+
+def _write_ena_credentials(username: str, password: str) -> None:
+    """Write Webin credentials to the default and per-user ENA credential files."""
+    _ENA_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _ENA_CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+    _ENA_CREDENTIALS_DIR.chmod(0o700)
+    existing_username, existing_password = _read_ena_credentials_file(_ENA_CREDENTIALS_FILE)
+    if (
+        existing_username
+        and existing_password
+        and existing_username.lower() != username.lower()
+    ):
+        _write_ena_credentials_file(
+            _ena_credentials_path_for_username(existing_username),
+            existing_username,
+            existing_password,
+        )
+    _write_ena_credentials_file(_ENA_CREDENTIALS_FILE, username, password)
+    _write_ena_credentials_file(_ena_credentials_path_for_username(username), username, password)
+
+
+def _test_ena_connection(username: str, password: str) -> bool:
+    """Return True if Webin FTP credentials are accepted by the ENA server."""
+    try:
+        ftp = ftplib.FTP_TLS(timeout=10)
+        ftp.connect(ENA_FTP_HOST, 21)
+        ftp.auth()
+        ftp.login(username, password)
+        ftp.quit()
+        return True
+    except Exception:
+        return False
 
 
 def run_erda_setup() -> int:
@@ -612,6 +725,115 @@ def run_ncbi_setup() -> int:
         "Useful commands:\n"
         "  [bold]prefetch SRR000001[/bold]          Download an SRA run\n"
         "  [bold]fasterq-dump SRR000001[/bold]      Convert to FASTQ",
+        border_style="bold green",
+    ))
+    return 0
+
+
+def run_ena_setup() -> int:
+    """Interactive Webin/FTP setup wizard for ENA (ebi.ac.uk)."""
+    console = Console()
+
+    # ── Welcome ───────────────────────────────────────────────────────────────
+    console.print()
+    console.print(Panel(
+        "[bold]ENA Webin Setup Wizard[/bold]\n\n"
+        "ENA (European Nucleotide Archive) is a nucleotide sequence data repository\n"
+        "at [bold]ebi.ac.uk[/bold] maintained by EMBL-EBI.\n\n"
+        "This wizard will:\n"
+        "  [cyan]1[/cyan]  Guide you to create a Webin submission account\n"
+        "  [cyan]2[/cyan]  Ask for your Webin username and password\n"
+        "  [cyan]3[/cyan]  Save credentials to ~/.config/ena/credentials.d/\n"
+        "  [cyan]4[/cyan]  Test the FTP connection to the Webin server",
+        title="mt config ena",
+        title_align="left",
+        border_style="bold cyan",
+    ))
+
+    # ── Step 1: Create Webin account ──────────────────────────────────────────
+    console.print()
+    console.print("[bold cyan]Step 1 of 4[/bold cyan]  Create a Webin account")
+    console.print()
+    console.print(
+        "  Do the following in your web browser:\n"
+        "    [bold]1.[/bold] Open [bold]https://www.ebi.ac.uk/ena/submit/webin[/bold]\n"
+        "    [bold]2.[/bold] Click [bold]Register[/bold] and complete the registration form\n"
+        "    [bold]3.[/bold] Your Webin username will be in the format [bold]Webin-XXXXX[/bold]\n"
+    )
+    click.pause(info="  Press Enter once you have your Webin account ready...")
+
+    # ── Step 2: Credentials ───────────────────────────────────────────────────
+    console.print()
+    console.print("[bold cyan]Step 2 of 4[/bold cyan]  Webin credentials")
+    console.print()
+    username = typer.prompt("  Webin username (e.g. Webin-12345)").strip()
+    if not username:
+        console.print("\n[bold red]Error:[/bold red] Username cannot be empty.")
+        return 1
+    if not username.lower().startswith("webin-"):
+        console.print(
+            "\n[bold yellow]Warning:[/bold yellow] Webin usernames usually start with 'Webin-'.\n"
+            "  Continuing with the entered value."
+        )
+
+    password = typer.prompt("  Webin password", hide_input=True).strip()
+    if not password:
+        console.print("\n[bold red]Error:[/bold red] Password cannot be empty.")
+        return 1
+
+    # ── Step 3: Save credentials ──────────────────────────────────────────────
+    console.print()
+    console.print("[bold cyan]Step 3 of 4[/bold cyan]  Save credentials")
+
+    existing_credentials = _list_ena_credentials()
+    existing_usernames = [credential.username for credential in existing_credentials]
+    matching_user = next(
+        (credential for credential in existing_credentials if credential.username.lower() == username.lower()),
+        None,
+    )
+    if matching_user is not None:
+        console.print(
+            f"\n  [yellow]Warning:[/yellow] Credentials for {matching_user.username} already exist.\n"
+        )
+        if not typer.confirm("  Replace the saved password for this Webin user?", default=False):
+            console.print("  Skipping — existing credentials kept.")
+            return 0
+    elif existing_usernames:
+        console.print("\n  Existing Webin users:")
+        for existing_username in existing_usernames:
+            console.print(f"    - {existing_username}")
+        if not typer.confirm("  Add this Webin user to the saved credentials?", default=True):
+            console.print("  Skipping — existing credentials kept.")
+            return 0
+
+    _write_ena_credentials(username, password)
+    console.print(
+        "  [green]Credentials saved.[/green]\n"
+        f"  Default credentials: [bold]{_ENA_CREDENTIALS_FILE}[/bold]\n"
+        f"  User credentials:    [bold]{_ena_credentials_path_for_username(username)}[/bold]"
+    )
+
+    # ── Step 4: Test connection ───────────────────────────────────────────────
+    console.print()
+    console.print("[bold cyan]Step 4 of 4[/bold cyan]  Test connection")
+    console.print()
+    if typer.confirm("  Test the FTP connection to the Webin server now?", default=True):
+        console.print(f"  Connecting to {ENA_FTP_HOST} (timeout 10 s) ...")
+        if _test_ena_connection(username, password):
+            console.print("  [bold green]Connection successful![/bold green]")
+        else:
+            console.print(
+                "  [bold yellow]Connection test failed.[/bold yellow]\n"
+                "  Check your credentials and try again:\n"
+                "    https://www.ebi.ac.uk/ena/submit/webin"
+            )
+
+    # ── Done ──────────────────────────────────────────────────────────────────
+    console.print()
+    console.print(Panel(
+        "[bold green]Setup complete![/bold green]\n\n"
+        "Upload files to ENA:    [bold]mt transfer ena <path>[/bold]\n"
+        f"Credentials stored in:  [bold]{_ENA_CONFIG_DIR}[/bold]",
         border_style="bold green",
     ))
     return 0

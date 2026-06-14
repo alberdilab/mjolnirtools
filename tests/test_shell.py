@@ -233,6 +233,22 @@ class ShellCommandTests(unittest.TestCase):
         self.assertIn('"/erda/my dest"', script)
         self.assertIn('"erda:/erda/my dest"/', script)
 
+    def test_build_transfer_ena_script_keep_original_exits_nonzero_on_failure(self):
+        script = shell.build_transfer_ena_script("/local/data.fastq.gz", keep_original=True)
+
+        self.assertIn("curl --ftp-ssl", script)
+        self.assertIn("Transfer complete. Source kept.", script)
+        self.assertIn("ERROR: Transfer failed.", script)
+        self.assertIn("exit $UPLOAD_RC", script)
+        self.assertNotIn("rm -rf", script)
+
+    def test_build_transfer_ena_script_delete_source_exits_nonzero_on_failure(self):
+        script = shell.build_transfer_ena_script("/local/data.fastq.gz", keep_original=False)
+
+        self.assertIn('rm -rf "/local/data.fastq.gz"', script)
+        self.assertIn("ERROR: Transfer failed. Source was NOT deleted.", script)
+        self.assertIn("exit $UPLOAD_RC", script)
+
 
 if __name__ == "__main__":
     unittest.main()

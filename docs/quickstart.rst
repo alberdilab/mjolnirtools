@@ -146,6 +146,12 @@ Set up SSH access to ERDA for data archiving and transfer:
 
    $ mt config erda
 
+Set up ENA Webin credentials for checklist-based ENA submissions:
+
+.. code-block:: console
+
+   $ mt config ena
+
 Set up SSH access to GitHub for password-free git operations:
 
 .. code-block:: console

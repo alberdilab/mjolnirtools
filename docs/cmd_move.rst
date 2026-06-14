@@ -3,10 +3,11 @@
 File Operations
 ===============
 
-The move commands transfer files and directories between project locations.
-Transfers run inside a background screen session using ``rsync``, so a
-dropped network connection does not interrupt a long copy. If you are already
-inside a screen session, the transfer runs in the current session instead.
+The move and transfer commands move files between project locations and submit
+data to remote services. Long-running transfers run inside a background screen
+session, so a dropped network connection does not interrupt the operation. If
+you are already inside a screen session, the transfer runs in the current
+session instead.
 
 .. contents::
    :local:
@@ -123,3 +124,86 @@ Examples:
 
    $ mt move erda /projects/alberdilab/people/username/rawdata /path/on/erda/rawdata
    $ mt move erda /projects/alberdilab/people/username/results /erda/projects/myproject --keep-original
+
+``mt transfer ena``
+-------------------
+
+Prepare and submit data to ENA Webin using a guided checklist and metadata
+workflow.
+
+.. note::
+
+   Requires ``mt config ena`` to have been run first. The command also requires
+   Java and a local Webin-CLI ``.jar`` file. Set ``WEBIN_CLI_JAR`` or provide
+   the jar path when prompted. If multiple Webin users have been configured,
+   the wizard asks which user to submit with before creating the workspace.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt transfer ena <path> [--delete]
+
+Arguments:
+
+``path``
+   Local file or directory containing the data files to submit.
+
+Options:
+
+``--delete``
+   Delete the source path only after ENA metadata submission and Webin-CLI data
+   submission both complete successfully. By default the source is kept.
+
+The wizard prints a boxed explanation before each prompt so users know what the
+value controls and whether ENA expects a pre-registered object, a local file,
+or a workflow choice. Each prompt box also explains that bracketed suggestions
+can be accepted by pressing Enter, or replaced by typing another value. It then
+performs these steps:
+
+1. Selects a Webin user when multiple users are configured.
+2. Selects the submission type: ``reads``, ``genome``, ``transcriptome``, or
+   ``sequence``. Before prompting, the wizard shows a short description of
+   each ENA Webin-CLI ``-context`` option and links to the relevant ENA
+   documentation pages.
+3. Asks whether to use the ENA test service first. This defaults to yes. When
+   enabled, the generated job runs the test submission first and automatically
+   reruns the same validated metadata and manifest against ENA production only
+   if the test submission succeeds.
+4. Asks which ENA study/BioProject to use for the selected service or services.
+   If you already have a study, it prompts for the study accession or alias. If
+   not, it collects a study alias, title, description, and optional hold date,
+   writes service-specific project XML files such as ``test-project.xml`` or
+   ``production-project.xml``, submits the study registration to ENA, and uses
+   the returned ``PRJEB...`` accession for the submission.
+5. Lets you select a common sample checklist or enter another ``ERC...``
+   checklist accession.
+6. Fetches the checklist definition from ENA and writes a TSV metadata template
+   in a workspace directory.
+7. Waits while you complete the TSV, then validates the completed file for the
+   checklist row, required columns, mandatory checklist fields, duplicate sample
+   aliases, and ASCII-only values.
+8. Generates ``sample.xml``, ``submission.xml``, and a Webin-CLI manifest
+   template in the workspace.
+9. Waits while you review and complete the manifest template. The wizard stops
+   if ``TODO`` placeholders remain.
+10. Writes ``submit-ena.sh`` and ``submit-ena.log``. In test-first mode it also
+   writes ``submit-ena-test.sh``, ``submit-ena-production.sh``, and a
+   production manifest copied from the reviewed test manifest with only the
+   ``STUDY`` value replaced.
+11. Runs ``submit-ena.sh``. If you are not already inside GNU Screen, this runs
+   in a detached session named ``mt-transfer-ena-YYYYMMDD-HHMMSS``.
+
+The generated submission script first submits sample metadata to the ENA Webin
+drop-box service. If the receipt is successful, it runs Webin-CLI with
+``-submit`` to validate, upload, and submit the data files. In test-first mode,
+the production script is not started unless the test script exits successfully.
+Output from the submission scripts is appended to ``submit-ena.log`` in the
+workspace.
+
+Examples:
+
+.. code-block:: console
+
+   $ mt transfer ena /projects/alberdilab/people/username/run42
+   $ WEBIN_CLI_JAR=$HOME/bin/webin-cli.jar mt transfer ena reads/
