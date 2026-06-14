@@ -2,6 +2,25 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.1.2 - 2026-06-14
+
+### Added
+
+- `mt transfer ena` now warns at startup when not running inside a GNU Screen
+  session, explains that a lost SSH connection requires restarting the wizard from
+  scratch, and offers the exact `screen -S mt-ena` command before asking whether
+  to continue anyway.
+- After a metadata TSV validation failure, choosing to fix and retry now prints
+  the SCP upload command so the user is reminded how to re-upload the corrected
+  file without scrolling back.
+
+### Changed
+
+- Non-ASCII validation errors in metadata TSV are now reported once per affected
+  column instead of once per row. Each message names the column, the number of
+  rows affected, and the exact non-ASCII character(s) with their Unicode code
+  points (e.g. `'µ' (U+00B5)`), making it clear what to search for and replace.
+
 ## 1.1.1 - 2026-06-14
 
 ### Added

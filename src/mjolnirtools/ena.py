@@ -37,6 +37,7 @@ WEBIN_CLI_RELEASES_URL = "https://github.com/enasequence/webin-cli/releases"
 STUDY_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/study.html"
 STUDY_PROGRAMMATIC_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/study/programmatic.html"
 SAMPLE_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/samples.html"
+CHECKLIST_BROWSER_URL = "https://www.ebi.ac.uk/ena/browser/checklists"
 SUBMISSION_CONTEXT_HELP = {
     "reads": (
         "Raw read data",
@@ -101,6 +102,16 @@ def _as_ascii(value: str) -> bool:
     except UnicodeEncodeError:
         return False
     return True
+
+
+def _non_ascii_chars(value: str) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for ch in value:
+        if ord(ch) > 127 and ch not in seen:
+            seen.add(ch)
+            result.append(ch)
+    return result
 
 
 def fetch_checklist(accession: str, timeout: int = 20) -> Checklist:
@@ -284,6 +295,9 @@ def write_metadata_template(
     headers = list(BASE_SAMPLE_COLUMNS) + [field.name for field in selected_fields]
     units = ["#units", "", "", ""]
     units.extend(field.units[0] if field.units else "" for field in selected_fields)
+    # BASE_SAMPLE_COLUMNS: sample_alias, sample_title, taxon_id are mandatory; scientific_name is optional
+    field_types = ["#field_type", "mandatory", "mandatory", "mandatory", "optional"]
+    field_types.extend("mandatory" if field.mandatory else "optional" for field in selected_fields)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as fh:
@@ -291,6 +305,7 @@ def write_metadata_template(
         writer.writerow(["#checklist_accession", checklist.accession])
         writer.writerow(headers)
         writer.writerow(units)
+        writer.writerow(field_types)
 
         # Generate rows for each sample or create a single placeholder
         if sample_names:
@@ -319,6 +334,8 @@ def read_metadata_tsv(path: Path) -> tuple[str, list[str], list[str], list[dict[
     samples: list[dict[str, str]] = []
     for row in rows[3:]:
         if not any(row):
+            continue
+        if row[0].startswith("#"):
             continue
         padded = row + [""] * (len(headers) - len(row))
         samples.append(dict(zip(headers, padded[: len(headers)])))
@@ -353,6 +370,7 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
             errors.append(f"Mandatory checklist column is missing: {field_name}.")
 
     aliases: set[str] = set()
+    non_ascii_cols: dict[str, tuple[set[str], int]] = {}
     for row_index, sample in enumerate(samples, start=4):
         alias = sample.get("sample_alias", "").strip()
         if not alias:
@@ -369,7 +387,19 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
                 errors.append(f"Row {row_index}: {field_name} is mandatory for {checklist.accession}.")
         for column, value in sample.items():
             if value and not _as_ascii(value):
-                errors.append(f"Row {row_index}: {column} contains non-ASCII characters.")
+                bad = _non_ascii_chars(value)
+                if column not in non_ascii_cols:
+                    non_ascii_cols[column] = (set(), 0)
+                existing_chars, count = non_ascii_cols[column]
+                non_ascii_cols[column] = (existing_chars | set(bad), count + 1)
+
+    for column, (bad_chars, row_count) in non_ascii_cols.items():
+        chars_repr = ", ".join(
+            f"'{ch}' (U+{ord(ch):04X})" for ch in sorted(bad_chars, key=ord)
+        )
+        errors.append(
+            f"Column '{column}' contains non-ASCII characters in {row_count} row(s): {chars_repr}."
+        )
 
     if not samples:
         errors.append("Metadata TSV does not contain any sample rows.")
@@ -842,8 +872,13 @@ def _guess_pairing(files: list[Path]) -> str:
     return "single"
 
 
-def _report_file_detection(console: Console, files: list[Path], max_show: int = 3) -> None:
-    """Report detected files with count, pairing guess, and sample names."""
+def _report_file_detection(
+    console: Console,
+    files: list[Path],
+    max_show: int = 3,
+    sample_names: list[str] | None = None,
+) -> None:
+    """Report detected files with count, pairing guess, and inferred sample names."""
     if not files:
         return
 
@@ -852,13 +887,19 @@ def _report_file_detection(console: Console, files: list[Path], max_show: int = 
 
     file_names = [f.name for f in files[:max_show]]
     files_text = ", ".join(f"[cyan]{name}[/cyan]" for name in file_names)
-
     if file_count > max_show:
         files_text += f", ... ([yellow]+{file_count - max_show} more[/yellow])"
 
     console.print()
-    console.print(f"  [green]Detected {file_count} file(s)[/green] ([bold]{pairing}[/bold])")
-    console.print(f"  Sample: {files_text}")
+    console.print(f"  [green]Detected {file_count} data file(s)[/green] ([bold]{pairing}[/bold]): {files_text}")
+
+    if sample_names:
+        sample_count = len(sample_names)
+        shown = sample_names[:max_show]
+        samples_text = ", ".join(f"[cyan]{name}[/cyan]" for name in shown)
+        if sample_count > max_show:
+            samples_text += f", ... ([yellow]+{sample_count - max_show} more[/yellow])"
+        console.print(f"  [green]Detected {sample_count} sample(s)[/green]: {samples_text}")
 
 
 def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
@@ -894,6 +935,29 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
         title_align="left",
         border_style="bold cyan",
     ))
+
+    if not shell.is_inside_screen():
+        console.print()
+        console.print(Panel(
+            "[yellow]You are not inside a GNU Screen session.[/yellow]\n\n"
+            "The wizard is interactive and may take several minutes. If your SSH "
+            "connection is lost mid-wizard, you will need to start from the beginning.\n\n"
+            "To protect your session, exit now and rerun inside Screen:\n\n"
+            "  [cyan]screen -S mt-ena[/cyan]\n"
+            "  [cyan]mt transfer ena[/cyan]\n\n"
+            "[dim]Reattach later with:  screen -r mt-ena[/dim]",
+            title="[bold yellow]Recommendation: run inside Screen[/bold yellow]",
+            title_align="left",
+            border_style="yellow",
+            padding=(0, 1),
+        ))
+        if not typer.confirm("  Continue without Screen?", default=False):
+            console.print(
+                "\n  Start a screen session first:\n"
+                "  [cyan]screen -S mt-ena[/cyan]\n"
+                "  Then rerun:  [cyan]mt transfer ena[/cyan]"
+            )
+            return 0
 
     credentials = _select_webin_credentials(console)
     if credentials is None:
@@ -965,12 +1029,17 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
     # Extract sample names from discovered data files
     data_files = discover_data_files(source_path, context)
     sample_names = extract_sample_names(data_files) if data_files else None
+    _report_file_detection(console, data_files, sample_names=sample_names)
 
     metadata_template = workspace / f"samples_{checklist.accession}.tsv"
     write_metadata_template(checklist, metadata_template, include_optional=include_optional, sample_names=sample_names)
     console.print(f"  [green]Metadata template written:[/green] {metadata_template}")
 
     scp_download_command = generate_scp_download_command(metadata_template)
+    scp_upload_command = generate_scp_upload_command(
+        Path(metadata_template.name),
+        metadata_template,
+    )
     _print_download_instructions(console, metadata_template.name, scp_download_command)
 
     edited_locally = typer.confirm(
@@ -979,10 +1048,6 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
     )
 
     if edited_locally:
-        scp_upload_command = generate_scp_upload_command(
-            Path(metadata_template.name),
-            metadata_template
-        )
         _print_upload_instructions(console, scp_upload_command, str(metadata_template))
         typer.confirm(
             "\n  Have you uploaded the edited file back to this location?",
@@ -1006,6 +1071,10 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
             for error in errors:
                 console.print(f"  - {error}")
             if typer.confirm("  Fix the TSV and try again?", default=True):
+                console.print(
+                    "\n  Fix the file on your local machine, then re-upload it:\n"
+                    f"  [cyan]{scp_upload_command}[/cyan]\n"
+                )
                 continue
             return 1
         break
@@ -1017,8 +1086,6 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
     write_submission_xml(submission_xml)
 
     sample_alias = _select_sample_alias(console, samples)
-    data_files = discover_data_files(source_path, context)
-    _report_file_detection(console, data_files)
     manifest = workspace / f"{context}.manifest.txt"
     write_manifest_template(context, source_path, data_files, template_study, sample_alias, manifest)
     console.print(f"  [green]Webin-CLI manifest template written:[/green] {manifest}")
@@ -1486,7 +1553,8 @@ def _select_checklist(console: Console) -> Checklist:
         "ENA sample checklists define which metadata fields are required for your "
         "sample type. The default checklist is general-purpose; choose a MIxS or "
         "custom ERC checklist when ENA or your community standard requires it.\n"
-        f"  ENA sample docs: {SAMPLE_DOC_URL}",
+        f"  ENA sample docs: {SAMPLE_DOC_URL}\n"
+        f"  Browse all checklists: {CHECKLIST_BROWSER_URL}",
     )
     table = Table(title="Sample Checklists")
     table.add_column("#")

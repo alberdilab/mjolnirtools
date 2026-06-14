@@ -589,7 +589,7 @@ class EnaTests(unittest.TestCase):
             ena._report_file_detection(console, files)
             output = console.file.getvalue()
 
-            self.assertIn("3 file(s)", output)
+            self.assertIn("3 data file(s)", output)
             self.assertIn("paired", output)
             self.assertIn("sample_R1.fastq", output)
             self.assertIn("sample_R2.fastq", output)
@@ -605,7 +605,7 @@ class EnaTests(unittest.TestCase):
             ena._report_file_detection(console, files, max_show=3)
             output = console.file.getvalue()
 
-            self.assertIn("10 file(s)", output)
+            self.assertIn("10 data file(s)", output)
             self.assertIn("+7 more", output)
 
     def test_extract_sample_names_removes_extensions_and_paired_indicators(self):
@@ -655,6 +655,26 @@ class EnaTests(unittest.TestCase):
 
             self.assertEqual(samples, ["mysample"])
 
+    def test_metadata_validation_groups_non_ascii_errors_by_column(self):
+        checklist = ena.parse_checklist_xml(CHECKLIST_XML)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "samples.tsv"
+            path.write_text(
+                "#checklist_accession\tERC999999\n"
+                "sample_alias\tsample_title\ttaxon_id\tscientific_name\tproject_name\n"
+                "#units\t\t\t\t\n"
+                "sample_1\tSample with µg DNA\t9606\tHomo sapiens\tTest project\n"
+                "sample_2\tSample 2\t9606\tHomo sapiens\tTest project\n"
+                "sample_3\tAnother µg sample\t9606\tHomo sapiens\tTest project\n",
+                encoding="utf-8",
+            )
+            errors, _, _, _ = ena.validate_metadata_tsv(path, checklist)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Column 'sample_title'", errors[0])
+        self.assertIn("2 row(s)", errors[0])
+        self.assertIn("U+00B5", errors[0])
+
     def test_write_metadata_template_with_sample_names(self):
         checklist = ena.parse_checklist_xml(CHECKLIST_XML)
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -673,7 +693,7 @@ class EnaTests(unittest.TestCase):
 
             # Verify each sample appears on its own line
             lines = [line for line in text.split("\n") if line.strip()]
-            self.assertEqual(len(lines), 6)  # accession, headers, units, and 3 samples
+            self.assertEqual(len(lines), 7)  # accession, headers, units, field_type, and 3 samples
 
 
 if __name__ == "__main__":
