@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import pwd
+import re
 import shlex
 import shutil
 import subprocess
@@ -342,6 +343,36 @@ def _non_ascii_chars(value: str) -> list[str]:
     return result
 
 
+# Header spellings (field NAME and LABEL) that hold the ENA collection date.
+COLLECTION_DATE_HEADERS = ("collection_date", "collection date")
+# INSDC missing-value terms ENA accepts in place of a real collection date.
+COLLECTION_DATE_MISSING_TERMS = (
+    "not applicable",
+    "not collected",
+    "not provided",
+    "restricted access",
+)
+# ENA accepts ISO 8601 dates: YYYY, YYYY-MM, YYYY-MM-DD, optionally with a time
+# component, and "/"-separated ranges of those.
+_COLLECTION_DATE_PATTERN = re.compile(
+    r"^\d{4}(-\d{2}(-\d{2}(T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})?)?)?)?$"
+)
+
+
+def _is_valid_collection_date(value: str) -> bool:
+    """Return True if value is an ENA-accepted collection date or missing-value term."""
+    text = value.strip()
+    if not text:
+        return True  # emptiness is handled by the mandatory-field checks
+    lowered = text.lower()
+    if lowered in COLLECTION_DATE_MISSING_TERMS or lowered.startswith("missing:"):
+        return True
+    parts = text.split("/")
+    if len(parts) > 2:
+        return False
+    return all(_COLLECTION_DATE_PATTERN.match(part.strip()) for part in parts)
+
+
 def fetch_checklist(accession: str, timeout: int = 20) -> Checklist:
     """Fetch and parse one ENA checklist from the ENA Browser API."""
     checklist_id = accession.strip().upper()
@@ -636,6 +667,8 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
     missing_base_cols: dict[str, int] = {}
     missing_mandatory_cols: dict[str, int] = {}
     non_ascii_cols: dict[str, tuple[set[str], int]] = {}
+    invalid_dates: list[str] = []
+    date_header = next((h for h in COLLECTION_DATE_HEADERS if h in headers), None)
     for row_index, sample in enumerate(samples, start=4):
         alias = sample.get("sample_alias", "").strip()
         if not alias:
@@ -657,6 +690,10 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
                     non_ascii_cols[column] = (set(), 0)
                 existing_chars, count = non_ascii_cols[column]
                 non_ascii_cols[column] = (existing_chars | set(bad), count + 1)
+        if date_header:
+            date_value = sample.get(date_header, "").strip()
+            if date_value and not _is_valid_collection_date(date_value):
+                invalid_dates.append(date_value)
 
     for column, row_count in missing_base_cols.items():
         errors.append(f"Column '{column}' is required but missing/empty in {row_count} row(s).")
@@ -670,6 +707,13 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
         )
         errors.append(
             f"Column '{column}' contains non-ASCII characters in {row_count} row(s): {chars_repr}."
+        )
+    if invalid_dates:
+        examples = ", ".join(sorted(set(invalid_dates))[:5])
+        errors.append(
+            f"Column '{date_header}' has {len(invalid_dates)} value(s) that are not ENA "
+            "collection dates. Use ISO 8601 (YYYY, YYYY-MM, or YYYY-MM-DD), a '/'-separated "
+            f"range, or an accepted missing-value term. Invalid: {examples}."
         )
 
     if not samples:
@@ -847,6 +891,17 @@ def write_sample_xml(
         for index, header in enumerate(headers)
         if index < len(units) and units[index].strip() and units[index] != "#units"
     }
+    # ENA validates each attribute against the checklist by its field LABEL (for
+    # example "geographic location (country and/or sea)"), not the underscored
+    # field NAME used as the TSV column header. Map header -> label so the emitted
+    # <TAG> matches what the checklist requires; fall back to the header itself for
+    # columns the checklist does not define (or when the checklist is unavailable).
+    label_by_name = {field.name: field.label for field in checklist.fields if field.label}
+    # Take units from the authoritative checklist definition rather than the TSV
+    # #units row: that row is easily corrupted when users edit the TSV in a
+    # non-UTF-8 editor (for example "°C" becoming "Â°C"). The TSV row is used only
+    # for columns the checklist does not define.
+    units_by_name = {field.name: field.units[0] for field in checklist.fields if field.units}
 
     for sample_row in samples:
         sample = ET.SubElement(sample_set, "SAMPLE", {"alias": sample_row["sample_alias"]})
@@ -868,7 +923,9 @@ def write_sample_xml(
             value = sample_row.get(header, "").strip()
             if not value:
                 continue
-            _add_sample_attribute(attributes, header, value, units_by_header.get(header, ""))
+            tag = label_by_name.get(header, header)
+            unit = units_by_name.get(header) or units_by_header.get(header, "")
+            _add_sample_attribute(attributes, tag, value, unit)
 
     tree = ET.ElementTree(sample_set)
     ET.indent(tree, space="  ")

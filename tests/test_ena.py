@@ -108,7 +108,86 @@ class EnaTests(unittest.TestCase):
         self.assertIn("<SAMPLE alias=\"sample_1\">", xml_text)
         self.assertIn("<TAG>ENA-CHECKLIST</TAG>", xml_text)
         self.assertIn("<VALUE>ERC999999</VALUE>", xml_text)
-        self.assertIn("<TAG>project_name</TAG>", xml_text)
+        # ENA keys attributes on the checklist field LABEL, not the underscored NAME.
+        self.assertIn("<TAG>project name</TAG>", xml_text)
+        self.assertNotIn("<TAG>project_name</TAG>", xml_text)
+
+    def test_write_sample_xml_uses_parenthesised_labels_and_checklist_units(self):
+        checklist_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<CHECKLIST_SET>\n'
+            '  <CHECKLIST accession="ERC000013" checklistType="Sample">\n'
+            '    <DESCRIPTOR>\n'
+            '      <LABEL>Test</LABEL>\n'
+            '      <FIELD_GROUP>\n'
+            '        <FIELD>\n'
+            '          <LABEL>geographic location (country and/or sea)</LABEL>\n'
+            '          <NAME>geographic_location_country_andor_sea</NAME>\n'
+            '          <MANDATORY>mandatory</MANDATORY>\n'
+            '        </FIELD>\n'
+            '        <FIELD>\n'
+            '          <LABEL>sample storage temperature</LABEL>\n'
+            '          <NAME>sample_storage_temperature</NAME>\n'
+            '          <UNITS><UNIT>°C</UNIT></UNITS>\n'
+            '          <MANDATORY>optional</MANDATORY>\n'
+            '        </FIELD>\n'
+            '      </FIELD_GROUP>\n'
+            '    </DESCRIPTOR>\n'
+            '  </CHECKLIST>\n'
+            '</CHECKLIST_SET>\n'
+        )
+        checklist = ena.parse_checklist_xml(checklist_xml)
+        samples = [{
+            "sample_alias": "s1",
+            "sample_title": "Marine microbiome",
+            "taxon_id": "408172",
+            "scientific_name": "marine metagenome",
+            "geographic_location_country_andor_sea": "Denmark: Kattegat",
+            "sample_storage_temperature": "-80",
+        }]
+        headers = [
+            "sample_alias", "sample_title", "taxon_id", "scientific_name",
+            "geographic_location_country_andor_sea", "sample_storage_temperature",
+        ]
+        # A deliberately corrupted #units row must not reach the XML: the unit is
+        # taken from the checklist definition instead.
+        units = ["#units", "", "", "", "", "BÂ°C"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sample.xml"
+            ena.write_sample_xml(samples, headers, units, checklist, path)
+            xml_text = path.read_text(encoding="utf-8")
+
+        self.assertIn("<TAG>geographic location (country and/or sea)</TAG>", xml_text)
+        self.assertIn("<VALUE>Denmark: Kattegat</VALUE>", xml_text)
+        self.assertIn("<TAG>sample storage temperature</TAG>", xml_text)
+        self.assertIn("<UNITS>°C</UNITS>", xml_text)
+        self.assertNotIn("BÂ°C", xml_text)
+
+    def test_validation_rejects_non_iso_collection_date(self):
+        checklist = ena.fallback_checklist("ERC000013")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "samples.tsv"
+            path.write_text(
+                "#checklist_accession\tERC000013\n"
+                "sample_alias\tsample_title\ttaxon_id\tscientific_name\tcollection_date\n"
+                "#units\t\t\t\t\n"
+                "#field_type\tmandatory\tmandatory\tmandatory\toptional\tmandatory\n"
+                "sample1\tMy sample\t408172\tmarine metagenome\t3/6/24\n"
+                "sample2\tMy sample\t408172\tmarine metagenome\t2024-06-03\n"
+            )
+            errors, _, _, _ = ena.validate_metadata_tsv(path, checklist)
+
+        self.assertTrue(
+            any("collection_date" in e and "3/6/24" in e for e in errors),
+            f"expected a collection_date error mentioning 3/6/24, got: {errors}",
+        )
+
+    def test_collection_date_accepts_iso_ranges_and_missing_terms(self):
+        for value in ["2024", "2024-06", "2024-06-03", "2024-06-03/2024-06-05",
+                      "not applicable", "missing: control sample"]:
+            self.assertTrue(ena._is_valid_collection_date(value), value)
+        for value in ["3/6/24", "06-03-2024", "June 2024", "2024/06/03/extra"]:
+            self.assertFalse(ena._is_valid_collection_date(value), value)
 
     def test_write_project_xml_and_submission_hold(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -2,6 +2,29 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.1.6 - 2026-06-14
+
+### Fixed
+
+- Sample XML now tags each attribute with the checklist field **label** (for example
+  `geographic location (country and/or sea)`) instead of the underscored field **name**
+  (`geographic_location_country_andor_sea`). ENA validates checklist attributes by label,
+  so fully-filled TSVs were previously rejected with "must have required property" errors
+  even though every mandatory column contained a value. Parenthesised labels are handled
+  correctly.
+- Attribute units are now taken from the authoritative checklist definition rather than
+  the TSV `#units` row. This prevents corrupted units (for example `°C` becoming `Â°C`
+  after editing the TSV in a non-UTF-8 editor) from reaching the submitted XML. The
+  `#units` row is still used for columns the checklist does not define.
+
+### Added
+
+- `validate_metadata_tsv` now rejects `collection_date` values that are not valid ENA
+  collection dates. Accepted forms are ISO 8601 (`YYYY`, `YYYY-MM`, `YYYY-MM-DD`, with an
+  optional time component), `/`-separated ranges, and INSDC missing-value terms. This
+  catches ambiguous formats such as `3/6/24` before submission rather than at the ENA
+  validation stage.
+
 ## 1.1.5 - 2026-06-14
 
 ### Fixed
