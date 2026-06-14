@@ -2,6 +2,15 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.1.1 - 2026-06-14
+
+### Added
+
+- ENA checklist metadata template now auto-populates with detected sample names
+  extracted from data files in the provided directory. Intelligently strips file
+  extensions and paired-end indicators (e.g., `_R1`, `_R2`, `_1`, `_2`,
+  `_forward`, `_reverse`) to identify unique samples and pre-fill checklist rows.
+
 ## 1.1.0 - 2026-06-14
 
 ### Added
