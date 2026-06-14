@@ -178,20 +178,28 @@ performs these steps:
    the returned ``PRJEB...`` accession for the submission.
 5. Lets you select a common sample checklist or enter another ``ERC...``
    checklist accession.
-6. Fetches the checklist definition from ENA and writes a TSV metadata template
-   in a workspace directory.
+6. Fetches the checklist definition from ENA, discovers data files in the
+   provided path, and extracts unique sample names by stripping file extensions
+   and paired-end indicators (e.g. ``_R1``, ``_R2``, ``_1``, ``_2``,
+   ``_forward``, ``_reverse``). Writes a TSV metadata template pre-populated
+   with one row per detected sample, so you only need to fill in the biological
+   metadata rather than the sample list.
 7. Waits while you complete the TSV, then validates the completed file for the
    checklist row, required columns, mandatory checklist fields, duplicate sample
    aliases, and ASCII-only values.
-8. Generates ``sample.xml``, ``submission.xml``, and a Webin-CLI manifest
+8. Reports the number of detected data files, whether they appear to be
+   paired-end or single-end, and shows up to three example file names. This
+   summary lets you confirm the right files were found before the manifest is
+   generated.
+9. Generates ``sample.xml``, ``submission.xml``, and a Webin-CLI manifest
    template in the workspace.
-9. Waits while you review and complete the manifest template. The wizard stops
+10. Waits while you review and complete the manifest template. The wizard stops
    if ``TODO`` placeholders remain.
-10. Writes ``submit-ena.sh`` and ``submit-ena.log``. In test-first mode it also
+11. Writes ``submit-ena.sh`` and ``submit-ena.log``. In test-first mode it also
    writes ``submit-ena-test.sh``, ``submit-ena-production.sh``, and a
    production manifest copied from the reviewed test manifest with only the
    ``STUDY`` value replaced.
-11. Runs ``submit-ena.sh``. If you are not already inside GNU Screen, this runs
+12. Runs ``submit-ena.sh``. If you are not already inside GNU Screen, this runs
    in a detached session named ``mt-transfer-ena-YYYYMMDD-HHMMSS``.
 
 The generated submission script first submits sample metadata to the ENA Webin

@@ -2,6 +2,32 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.1.3 - 2026-06-14
+
+### Added
+
+- `mt transfer ena` now collects sequencing library metadata
+  (PLATFORM, INSTRUMENT, LIBRARY_SOURCE, LIBRARY_SELECTION, LIBRARY_STRATEGY)
+  during the wizard using numbered selection from ENA's full controlled
+  vocabulary. INSTRUMENT choices are filtered to only the instruments valid for
+  the selected platform. LIBRARY_NAME remains free text. All selected values are
+  written directly into every generated manifest so no TODO placeholders remain
+  for library fields.
+
+### Changed
+
+- `mt transfer ena` now generates one Webin-CLI manifest per sample alias
+  instead of a single manifest for all files. Data files are matched to TSV
+  sample aliases by the sample name detected from the filename (case-insensitive).
+  Files that cannot be matched to any alias are reported as a warning. The
+  sample-alias selection prompt has been removed — manifests are auto-assigned.
+- The generated submission script loops over all per-sample manifests and calls
+  Webin-CLI once per manifest, creating a separate ENA run for each sample.
+- `mt-ena-*/` added to `.gitignore` so local ENA workspace directories created
+  by `mt transfer ena` are not tracked.
+- Updated `mt transfer ena` documentation step list to reflect per-sample
+  manifest generation, file detection report, and pre-populated TSV template.
+
 ## 1.1.2 - 2026-06-14
 
 ### Added

@@ -83,7 +83,7 @@ class EnaTests(unittest.TestCase):
             )
             errors, _, _, _ = ena.validate_metadata_tsv(path, checklist)
 
-        self.assertIn("Row 4: project_name is mandatory for ERC999999.", errors)
+        self.assertIn("Column 'project_name' is mandatory for ERC999999 but missing/empty in 1 row(s).", errors)
 
     def test_write_sample_xml_adds_checklist_and_attributes(self):
         checklist = ena.parse_checklist_xml(CHECKLIST_XML)
@@ -288,7 +288,7 @@ class EnaTests(unittest.TestCase):
                 log_path=base / "submit.log",
                 webin_cli_jar=base / "webin-cli.jar",
                 context="reads",
-                manifest=base / "reads.manifest.txt",
+                manifests=[base / "reads_sample1.manifest.txt"],
                 input_dir=base / "reads",
                 output_dir=base / "out",
                 test_service=True,
@@ -304,6 +304,33 @@ class EnaTests(unittest.TestCase):
         self.assertIn("-context reads", text)
         self.assertIn("-submit -test", text)
         self.assertIn("Source kept.", text)
+
+    def test_write_submission_script_loops_over_multiple_manifests(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            script = base / "submit.sh"
+            ena.write_submission_script(
+                script_path=script,
+                credentials_path=base / "credentials",
+                sample_xml=base / "sample.xml",
+                submission_xml=base / "submission.xml",
+                receipt_xml=base / "receipt.xml",
+                log_path=base / "submit.log",
+                webin_cli_jar=base / "webin-cli.jar",
+                context="reads",
+                manifests=[base / "reads_s1.manifest.txt", base / "reads_s2.manifest.txt"],
+                input_dir=base / "reads",
+                output_dir=base / "out",
+                test_service=False,
+                source=base / "reads",
+                keep_original=True,
+            )
+            text = script.read_text()
+
+        self.assertIn("reads_s1.manifest.txt", text)
+        self.assertIn("reads_s2.manifest.txt", text)
+        self.assertIn("for MANIFEST_FILE in", text)
+        self.assertIn("-manifest \"$MANIFEST_FILE\"", text)
 
     def test_write_test_then_production_script_runs_test_before_production(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -640,6 +667,113 @@ class EnaTests(unittest.TestCase):
             samples = ena.extract_sample_names(files)
 
             self.assertEqual(samples, ["genome", "reads", "sequence", "transcript"])
+
+    def test_group_files_by_sample_groups_paired_reads_together(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            files = [
+                base / "sample1_R1.fastq.gz",
+                base / "sample1_R2.fastq.gz",
+                base / "sample2_R1.fastq.gz",
+                base / "sample2_R2.fastq.gz",
+            ]
+            for f in files:
+                f.touch()
+
+            groups = ena.group_files_by_sample(files)
+
+        self.assertEqual(list(groups.keys()), ["sample1", "sample2"])
+        self.assertEqual(len(groups["sample1"]), 2)
+        self.assertEqual(len(groups["sample2"]), 2)
+
+    def test_match_files_to_aliases_maps_files_to_matching_alias(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            files = [
+                base / "sample1_R1.fastq.gz",
+                base / "sample1_R2.fastq.gz",
+                base / "sample2_R1.fastq.gz",
+            ]
+            for f in files:
+                f.touch()
+
+            result = ena.match_files_to_aliases(files, ["sample1", "sample2", "sample3"])
+
+        self.assertEqual(len(result["sample1"]), 2)
+        self.assertEqual(len(result["sample2"]), 1)
+        self.assertEqual(result["sample3"], [])
+
+    def test_match_files_to_aliases_is_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            files = [base / "Sample1_R1.fastq.gz"]
+            files[0].touch()
+
+            result = ena.match_files_to_aliases(files, ["sample1"])
+
+        self.assertEqual(len(result["sample1"]), 1)
+
+    def test_valid_instruments_covers_all_platforms(self):
+        for platform in ena.VALID_PLATFORMS:
+            self.assertIn(platform, ena.VALID_INSTRUMENTS, f"VALID_INSTRUMENTS missing entry for {platform}")
+            self.assertGreater(len(ena.VALID_INSTRUMENTS[platform]), 0)
+
+    def test_prompt_from_list_returns_selected_option(self):
+        output = StringIO()
+        console = Console(file=output, force_terminal=False, width=80)
+
+        with mock.patch("mjolnirtools.ena.typer.prompt", return_value="3"):
+            result = ena._prompt_from_list(console, "Test field", ("alpha", "beta", "gamma"), "Test")
+
+        self.assertEqual(result, "gamma")
+
+    def test_prompt_from_list_rejects_out_of_range_then_accepts(self):
+        output = StringIO()
+        console = Console(file=output, force_terminal=False, width=80)
+
+        with mock.patch("mjolnirtools.ena.typer.prompt", side_effect=["0", "99", "1"]):
+            result = ena._prompt_from_list(console, "Test", ("only",), "Test")
+
+        self.assertEqual(result, "only")
+
+    def test_write_manifest_template_reads_with_library_fills_all_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "reads"
+            source.mkdir()
+            read = source / "sample1_R1.fastq.gz"
+            read.write_text("data")
+            manifest = Path(tmpdir) / "reads_sample1.manifest.txt"
+            library = ena.ReadsLibraryMetadata(
+                platform="ILLUMINA",
+                instrument="Illumina NovaSeq X",
+                library_name="lib-sample1",
+                library_source="METAGENOMIC",
+                library_selection="RANDOM",
+                library_strategy="WGS",
+            )
+
+            ena.write_manifest_template(
+                "reads",
+                source,
+                [read],
+                "PRJEB1",
+                "sample1",
+                manifest,
+                library=library,
+            )
+            text = manifest.read_text()
+            has_todos = ena.manifest_has_todos(manifest)
+
+        self.assertIn("STUDY\tPRJEB1", text)
+        self.assertIn("SAMPLE\tsample1", text)
+        self.assertIn("NAME\tsample1", text)
+        self.assertIn("PLATFORM\tILLUMINA", text)
+        self.assertIn("INSTRUMENT\tIllumina NovaSeq X", text)
+        self.assertIn("LIBRARY_NAME\tlib-sample1", text)
+        self.assertIn("LIBRARY_SOURCE\tMETAGENOMIC", text)
+        self.assertIn("LIBRARY_SELECTION\tRANDOM", text)
+        self.assertIn("LIBRARY_STRATEGY\tWGS", text)
+        self.assertFalse(has_todos)
 
     def test_extract_sample_names_deduplicates_paired_reads(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -68,6 +68,216 @@ COMMON_CHECKLISTS = (
     ("ERC000014", "GSC MIxS human-associated samples"),
 )
 
+# ENA/SRA controlled vocabulary for reads manifest fields
+VALID_PLATFORMS: tuple[str, ...] = (
+    "ILLUMINA",
+    "OXFORD_NANOPORE",
+    "PACBIO_SMRT",
+    "ION_TORRENT",
+    "BGISEQ",
+    "DNBSEQ",
+    "CAPILLARY",
+    "LS454",
+    "ABI_SOLID",
+    "HELICOS",
+    "COMPLETE_GENOMICS",
+)
+VALID_INSTRUMENTS: dict[str, tuple[str, ...]] = {
+    "ILLUMINA": (
+        "Illumina NovaSeq X",
+        "Illumina NovaSeq 6000",
+        "NextSeq 2000",
+        "NextSeq 1000",
+        "NextSeq 550",
+        "NextSeq 500",
+        "Illumina MiSeq",
+        "Illumina MiniSeq",
+        "Illumina iSeq 100",
+        "Illumina HiSeq 4000",
+        "Illumina HiSeq 3000",
+        "Illumina HiSeq 2500",
+        "Illumina HiSeq 2000",
+        "Illumina HiSeq 1500",
+        "Illumina HiSeq 1000",
+        "Illumina HiScanSQ",
+        "Illumina Genome Analyzer IIx",
+        "Illumina Genome Analyzer II",
+        "Illumina Genome Analyzer",
+        "HiSeq X Ten",
+        "HiSeq X Five",
+        "unspecified",
+    ),
+    "OXFORD_NANOPORE": (
+        "PromethION",
+        "GridION",
+        "P2 Solo",
+        "MinION",
+        "unspecified",
+    ),
+    "PACBIO_SMRT": (
+        "Revio",
+        "Sequel IIe",
+        "Sequel II",
+        "Sequel",
+        "PacBio RS II",
+        "PacBio RS",
+        "unspecified",
+    ),
+    "ION_TORRENT": (
+        "Ion Torrent Genexus",
+        "Ion GeneStudio S5 Prime",
+        "Ion GeneStudio S5 Plus",
+        "Ion GeneStudio S5",
+        "Ion Torrent S5 XL",
+        "Ion Torrent S5",
+        "Ion Torrent Proton",
+        "Ion Torrent PGM",
+        "unspecified",
+    ),
+    "BGISEQ": (
+        "DNBSEQ-T7",
+        "DNBSEQ-G400",
+        "DNBSEQ-G400 FAST",
+        "DNBSEQ-G50",
+        "MGISEQ-2000RS",
+        "BGISEQ-500",
+        "unspecified",
+    ),
+    "DNBSEQ": (
+        "DNBSEQ-T7",
+        "DNBSEQ-G400",
+        "DNBSEQ-G400 FAST",
+        "DNBSEQ-G50",
+        "unspecified",
+    ),
+    "CAPILLARY": (
+        "AB 3730xL Genetic Analyzer",
+        "AB 3730 Genetic Analyzer",
+        "AB 3500xL Genetic Analyzer",
+        "AB 3500 Genetic Analyzer",
+        "AB 3130xL Genetic Analyzer",
+        "AB 3130 Genetic Analyzer",
+        "AB 310 Genetic Analyzer",
+        "unspecified",
+    ),
+    "LS454": (
+        "454 GS FLX+",
+        "454 GS FLX Titanium",
+        "454 GS FLX",
+        "454 GS Junior",
+        "454 GS 20",
+        "454 GS",
+        "unspecified",
+    ),
+    "ABI_SOLID": (
+        "AB 5500xl-W Genetic Analysis System",
+        "AB 5500xl Genetic Analyzer",
+        "AB 5500 Genetic Analyzer",
+        "AB SOLiD PI System",
+        "AB SOLiD 4hq System",
+        "AB SOLiD 4 System",
+        "AB SOLiD 3 Plus System",
+        "AB SOLiD System 3.0",
+        "AB SOLiD System 2.0",
+        "AB SOLiD System",
+        "unspecified",
+    ),
+    "HELICOS": (
+        "Helicos HeliScope",
+        "unspecified",
+    ),
+    "COMPLETE_GENOMICS": (
+        "Complete Genomics",
+        "unspecified",
+    ),
+}
+VALID_LIBRARY_SOURCES: tuple[str, ...] = (
+    "METAGENOMIC",
+    "METATRANSCRIPTOMIC",
+    "GENOMIC",
+    "GENOMIC SINGLE CELL",
+    "TRANSCRIPTOMIC",
+    "TRANSCRIPTOMIC SINGLE CELL",
+    "SYNTHETIC",
+    "VIRAL RNA",
+    "OTHER",
+)
+VALID_LIBRARY_SELECTIONS: tuple[str, ...] = (
+    "RANDOM",
+    "PCR",
+    "RANDOM PCR",
+    "RT-PCR",
+    "size fractionation",
+    "cDNA",
+    "cDNA_randomPriming",
+    "cDNA_oligo_dT",
+    "PolyA",
+    "Oligo-dT",
+    "Hybrid Selection",
+    "ChIP",
+    "ChIP-Seq",
+    "MNase",
+    "DNase",
+    "Reduced Representation",
+    "Restriction Digest",
+    "Inverse rRNA",
+    "Inverse rRNA selection",
+    "5-methylcytidine antibody",
+    "MBD2 protein methyl-CpG binding domain",
+    "CAGE",
+    "RACE",
+    "MDA",
+    "padlock probes capture method",
+    "repeat fractionation",
+    "HMPR",
+    "MF",
+    "MSLL",
+    "other",
+    "unspecified",
+)
+VALID_LIBRARY_STRATEGIES: tuple[str, ...] = (
+    "WGS",
+    "WGA",
+    "WXS",
+    "RNA-Seq",
+    "ssRNA-seq",
+    "miRNA-Seq",
+    "ncRNA-Seq",
+    "FL-cDNA",
+    "EST",
+    "Hi-C",
+    "ATAC-seq",
+    "AMPLICON",
+    "RAD-Seq",
+    "ChIP-Seq",
+    "Bisulfite-Seq",
+    "MNase-Seq",
+    "DNase-Hypersensitivity",
+    "MeDIP-Seq",
+    "MBD-Seq",
+    "MRE-Seq",
+    "FAIRE-seq",
+    "RIP-Seq",
+    "ChIA-PET",
+    "Ribo-Seq",
+    "Tn-Seq",
+    "SELEX",
+    "GBS",
+    "NOMe-Seq",
+    "Synthetic-Long-Read",
+    "TARGETED-CAPTURE",
+    "Tethered Chromatin Conformation Capture",
+    "WCS",
+    "CLONE",
+    "POOLCLONE",
+    "CLONEEND",
+    "FINISHING",
+    "CTS",
+    "VALIDATION",
+    "ChM-Seq",
+    "OTHER",
+)
+
 
 @dataclass(frozen=True)
 class ChecklistField:
@@ -87,6 +297,18 @@ class Checklist:
     accession: str
     label: str
     fields: tuple[ChecklistField, ...]
+
+
+@dataclass(frozen=True)
+class ReadsLibraryMetadata:
+    """Library preparation and sequencing metadata shared across reads manifests."""
+
+    platform: str
+    instrument: str
+    library_name: str
+    library_source: str
+    library_selection: str
+    library_strategy: str
 
 
 def _node_text(parent: ET.Element, name: str) -> str:
@@ -234,48 +456,67 @@ def _print_upload_instructions(console: Console, scp_command: str, remote_path: 
     ))
 
 
+_SEQUENCE_EXTENSIONS = (
+    ".fastq.gz", ".fasta.gz", ".fna.gz", ".fa.gz",
+    ".fastq", ".fasta", ".fna", ".fa",
+    ".fq.gz", ".fq",
+    ".bam", ".cram", ".embl", ".dat",
+)
+_PAIRED_PATTERNS = (
+    "_r1", "_r2",
+    "_1", "_2",
+    "_f", "_r",
+    "_forward", "_reverse",
+)
+
+
+def _extract_single_sample_name(file_path: Path) -> str:
+    """Extract the sample name from a single data file path."""
+    name = file_path.name.lower()
+    for ext in _SEQUENCE_EXTENSIONS:
+        if name.endswith(ext):
+            name = name[:-len(ext)]
+            break
+    for pattern in _PAIRED_PATTERNS:
+        if pattern in name:
+            name = name.split(pattern)[0]
+            break
+    return name
+
+
 def extract_sample_names(data_files: list[Path]) -> list[str]:
-    """Extract unique sample names from data file names.
+    """Extract unique sample names from data file names."""
+    return sorted({_extract_single_sample_name(f) for f in data_files})
 
-    Removes common file extensions and paired-end indicators to identify samples.
-    """
-    sample_names: set[str] = set()
 
-    # Common file extensions, longest first to avoid partial matches
-    extensions = (
-        ".fastq.gz", ".fasta.gz", ".fna.gz", ".fa.gz",
-        ".fastq", ".fasta", ".fna", ".fa",
-        ".fq.gz", ".fq",
-        ".bam", ".cram", ".embl", ".dat",
-    )
-
+def group_files_by_sample(data_files: list[Path]) -> dict[str, list[Path]]:
+    """Group data files by detected sample name, sorted alphabetically by sample."""
+    groups: dict[str, list[Path]] = {}
     for file_path in data_files:
-        name = file_path.name.lower()
+        sample = _extract_single_sample_name(file_path)
+        groups.setdefault(sample, []).append(file_path)
+    return dict(sorted(groups.items()))
 
-        # Remove file extension
-        sample_name = name
-        for ext in extensions:
-            if sample_name.endswith(ext):
-                sample_name = sample_name[:-len(ext)]
-                break
 
-        # Remove paired-end indicators (both prefix forms and suffix forms)
-        # Handle patterns like _R1, _R2, _r1, _r2, _1, _2, _forward, _reverse, etc.
-        paired_patterns = (
-            "_r1", "_r2",  # _r1, _r2
-            "_1", "_2",    # _1, _2 (after extension removed, these can be at end)
-            "_f", "_r",    # _f, _r
-            "_forward", "_reverse",
-        )
-        for pattern in paired_patterns:
-            if pattern in sample_name:
-                # Split on first occurrence and keep the part before
-                sample_name = sample_name.split(pattern)[0]
-                break
+def match_files_to_aliases(
+    data_files: list[Path],
+    sample_aliases: list[str],
+) -> dict[str, list[Path]]:
+    """Match data files to TSV sample aliases by detected sample name.
 
-        sample_names.add(sample_name)
-
-    return sorted(sample_names)
+    Returns a dict mapping each alias to its matched files. Aliases with no
+    matching files map to an empty list. Comparison is case-insensitive.
+    """
+    file_groups = group_files_by_sample(data_files)
+    result: dict[str, list[Path]] = {}
+    for alias in sample_aliases:
+        alias_lower = alias.lower()
+        matched: list[Path] = []
+        for detected_name, files in file_groups.items():
+            if detected_name == alias_lower:
+                matched.extend(files)
+        result[alias] = matched
+    return result
 
 
 def write_metadata_template(
@@ -370,6 +611,8 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
             errors.append(f"Mandatory checklist column is missing: {field_name}.")
 
     aliases: set[str] = set()
+    missing_base_cols: dict[str, int] = {}
+    missing_mandatory_cols: dict[str, int] = {}
     non_ascii_cols: dict[str, tuple[set[str], int]] = {}
     for row_index, sample in enumerate(samples, start=4):
         alias = sample.get("sample_alias", "").strip()
@@ -381,10 +624,10 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
 
         for column in BASE_SAMPLE_COLUMNS[:3]:
             if not sample.get(column, "").strip():
-                errors.append(f"Row {row_index}: {column} is required.")
+                missing_base_cols[column] = missing_base_cols.get(column, 0) + 1
         for field_name in mandatory_fields:
             if not sample.get(field_name, "").strip():
-                errors.append(f"Row {row_index}: {field_name} is mandatory for {checklist.accession}.")
+                missing_mandatory_cols[field_name] = missing_mandatory_cols.get(field_name, 0) + 1
         for column, value in sample.items():
             if value and not _as_ascii(value):
                 bad = _non_ascii_chars(value)
@@ -393,6 +636,12 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
                 existing_chars, count = non_ascii_cols[column]
                 non_ascii_cols[column] = (existing_chars | set(bad), count + 1)
 
+    for column, row_count in missing_base_cols.items():
+        errors.append(f"Column '{column}' is required but missing/empty in {row_count} row(s).")
+    for field_name, row_count in missing_mandatory_cols.items():
+        errors.append(
+            f"Column '{field_name}' is mandatory for {checklist.accession} but missing/empty in {row_count} row(s)."
+        )
     for column, (bad_chars, row_count) in non_ascii_cols.items():
         chars_repr = ", ".join(
             f"'{ch}' (U+{ord(ch):04X})" for ch in sorted(bad_chars, key=ord)
@@ -653,6 +902,7 @@ def write_manifest_template(
     study: str,
     sample_alias: str,
     path: Path,
+    library: ReadsLibraryMetadata | None = None,
 ) -> None:
     """Write a Webin-CLI manifest template for the selected data files."""
     input_dir = source.parent if source.is_file() else source
@@ -661,7 +911,7 @@ def write_manifest_template(
         for file in data_files
     ]
 
-    lines = _manifest_header(context, source, study, sample_alias)
+    lines = _manifest_header(context, source, study, sample_alias, library=library)
     if context == "reads":
         for file_name in relative_files:
             lower = file_name.lower()
@@ -696,19 +946,26 @@ def write_manifest_for_study(source_manifest: Path, target_manifest: Path, study
     target_manifest.write_text("\n".join(updated) + "\n")
 
 
-def _manifest_header(context: str, source: Path, study: str, sample_alias: str) -> list[str]:
+def _manifest_header(
+    context: str,
+    source: Path,
+    study: str,
+    sample_alias: str,
+    library: ReadsLibraryMetadata | None = None,
+) -> list[str]:
     name = source.stem if source.is_file() else source.name
     if context == "reads":
+        lib = library
         return [
             f"STUDY\t{study}",
             f"SAMPLE\t{sample_alias}",
-            f"NAME\t{name}",
-            "PLATFORM\tTODO",
-            "INSTRUMENT\tTODO",
-            "LIBRARY_NAME\tTODO",
-            "LIBRARY_SOURCE\tTODO",
-            "LIBRARY_SELECTION\tTODO",
-            "LIBRARY_STRATEGY\tTODO",
+            f"NAME\t{sample_alias}",
+            f"PLATFORM\t{lib.platform if lib else 'TODO'}",
+            f"INSTRUMENT\t{lib.instrument if lib else 'TODO'}",
+            f"LIBRARY_NAME\t{lib.library_name if lib else 'TODO'}",
+            f"LIBRARY_SOURCE\t{lib.library_source if lib else 'TODO'}",
+            f"LIBRARY_SELECTION\t{lib.library_selection if lib else 'TODO'}",
+            f"LIBRARY_STRATEGY\t{lib.library_strategy if lib else 'TODO'}",
         ]
     if context == "genome":
         return [
@@ -751,7 +1008,7 @@ def write_submission_script(
     log_path: Path,
     webin_cli_jar: Path,
     context: str,
-    manifest: Path,
+    manifests: list[Path],
     input_dir: Path,
     output_dir: Path,
     test_service: bool,
@@ -765,6 +1022,8 @@ def write_submission_script(
     if not keep_original:
         delete_block = f"rm -rf {shlex.quote(str(source))} && echo 'Source deleted.'"
 
+    manifest_list = "\n".join(f"  {shlex.quote(str(m))}" for m in manifests)
+
     script = f"""#!/usr/bin/env bash
 set -euo pipefail
 
@@ -774,7 +1033,6 @@ SUBMISSION_XML={shlex.quote(str(submission_xml))}
 RECEIPT_XML={shlex.quote(str(receipt_xml))}
 LOG_FILE={shlex.quote(str(log_path))}
 WEBIN_CLI_JAR={shlex.quote(str(webin_cli_jar))}
-MANIFEST={shlex.quote(str(manifest))}
 INPUT_DIR={shlex.quote(str(input_dir))}
 OUTPUT_DIR={shlex.quote(str(output_dir))}
 ENA_USER="$(awk -F= '$1 == "username" {{print substr($0, index($0, "=") + 1)}}' "$CREDS")"
@@ -801,15 +1059,21 @@ if ! grep -q 'success="true"' "$RECEIPT_XML"; then
   exit 1
 fi
 
+MANIFESTS=(
+{manifest_list}
+)
+
 echo "Submitting data with Webin-CLI..."
-java -jar "$WEBIN_CLI_JAR" \\
-  -context {shlex.quote(context)} \\
-  -userName "$ENA_USER" \\
-  -password "$ENA_PASS" \\
-  -manifest "$MANIFEST" \\
-  -inputDir "$INPUT_DIR" \\
-  -outputDir "$OUTPUT_DIR" \\
-  -submit{test_flag}
+for MANIFEST_FILE in "${{MANIFESTS[@]}}"; do
+  java -jar "$WEBIN_CLI_JAR" \\
+    -context {shlex.quote(context)} \\
+    -userName "$ENA_USER" \\
+    -password "$ENA_PASS" \\
+    -manifest "$MANIFEST_FILE" \\
+    -inputDir "$INPUT_DIR" \\
+    -outputDir "$OUTPUT_DIR" \\
+    -submit{test_flag}
+done
 
 {delete_block}
 echo "ENA transfer complete."
@@ -1085,28 +1349,63 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
     write_sample_xml(samples, headers, units, checklist, sample_xml)
     write_submission_xml(submission_xml)
 
-    sample_alias = _select_sample_alias(console, samples)
-    manifest = workspace / f"{context}.manifest.txt"
-    write_manifest_template(context, source_path, data_files, template_study, sample_alias, manifest)
-    console.print(f"  [green]Webin-CLI manifest template written:[/green] {manifest}")
-    console.print(
-        "  Review this manifest before continuing. Replace every TODO with the "
-        "submission metadata required for the selected ENA context."
-    )
-    click.pause("  Review and complete the manifest, then press Enter to continue...")
-    if manifest_has_todos(manifest):
-        console.print("[bold red]Error:[/bold red] Manifest still contains TODO values.")
+    library: ReadsLibraryMetadata | None = None
+    if context == "reads":
+        library = _prompt_reads_library_metadata(console, sample_count=len(samples))
+
+    sample_aliases = [s["sample_alias"] for s in samples]
+    alias_to_files = match_files_to_aliases(data_files, sample_aliases)
+
+    manifests: list[Path] = []
+    for alias, alias_files in alias_to_files.items():
+        if not alias_files:
+            console.print(f"  [yellow]Warning:[/yellow] No data files matched alias '{alias}' — skipping manifest.")
+            continue
+        manifest_path = workspace / f"{context}_{alias}.manifest.txt"
+        write_manifest_template(context, source_path, alias_files, template_study, alias, manifest_path, library=library)
+        manifests.append(manifest_path)
+        console.print(f"  [green]Manifest written:[/green] {manifest_path} ({len(alias_files)} file(s))")
+
+    all_matched = {f for fs in alias_to_files.values() for f in fs}
+    unmatched = [f for f in data_files if f not in all_matched]
+    if unmatched:
+        console.print(f"  [yellow]Warning:[/yellow] {len(unmatched)} file(s) could not be matched to any sample alias:")
+        for f in unmatched[:5]:
+            console.print(f"    {f.name}")
+        if len(unmatched) > 5:
+            console.print(f"    ... and {len(unmatched) - 5} more")
+
+    if not manifests:
+        console.print("[bold red]Error:[/bold red] No manifests were generated.")
         return 1
-    production_manifest = manifest
-    if test_first:
-        production_manifest = workspace / f"{context}.production.manifest.txt"
-        try:
-            write_manifest_for_study(manifest, production_manifest, production_study)
-        except ValueError as exc:
-            console.print(f"[bold red]Error:[/bold red] {exc}")
-            return 1
+
+    if context == "reads":
         console.print(
-            f"  [green]Production manifest written:[/green] {production_manifest}"
+            "\n  Review the manifests above and verify that files are assigned to the correct sample."
+        )
+    else:
+        console.print(
+            "\n  Review the manifests above. Replace every TODO with the "
+            "submission metadata required for the selected ENA context."
+        )
+    click.pause("  Review the manifests, then press Enter to continue...")
+    if any(manifest_has_todos(m) for m in manifests):
+        console.print("[bold red]Error:[/bold red] One or more manifests still contain TODO values.")
+        return 1
+
+    production_manifests = manifests
+    if test_first:
+        production_manifests = []
+        for m in manifests:
+            pm = workspace / f"{m.stem}.production.manifest.txt"
+            try:
+                write_manifest_for_study(m, pm, production_study)
+            except ValueError as exc:
+                console.print(f"[bold red]Error:[/bold red] {exc}")
+                return 1
+            production_manifests.append(pm)
+        console.print(
+            f"  [green]{len(production_manifests)} production manifest(s) written.[/green]"
         )
 
     webin_cli_jar = _prompt_webin_cli_jar(console)
@@ -1131,7 +1430,7 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
             log_path=log_path,
             webin_cli_jar=webin_cli_jar,
             context=context,
-            manifest=manifest,
+            manifests=manifests,
             input_dir=input_dir,
             output_dir=workspace / "webin-cli-output-test",
             test_service=True,
@@ -1191,7 +1490,7 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
             log_path=log_path,
             webin_cli_jar=webin_cli_jar,
             context=context,
-            manifest=production_manifest,
+            manifests=production_manifests,
             input_dir=input_dir,
             output_dir=workspace / "webin-cli-output-production",
             test_service=False,
@@ -1229,7 +1528,7 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
             log_path=log_path,
             webin_cli_jar=webin_cli_jar,
             context=context,
-            manifest=manifest,
+            manifests=manifests,
             input_dir=input_dir,
             output_dir=workspace / "webin-cli-output",
             test_service=False,
@@ -1591,6 +1890,53 @@ def _select_checklist(console: Console) -> Checklist:
         checklist = fallback_checklist(accession)
     console.print(f"  Selected: [bold]{checklist.accession}[/bold] {checklist.label}")
     return checklist
+
+
+def _prompt_from_list(
+    console: Console,
+    title: str,
+    options: tuple[str, ...],
+    field: str,
+) -> str:
+    """Display a numbered table of valid options and return the selected value."""
+    table = Table(title=title, show_header=False, box=None, padding=(0, 1))
+    table.add_column("#", style="bold cyan", no_wrap=True)
+    table.add_column("Value")
+    for i, opt in enumerate(options, start=1):
+        table.add_row(str(i), opt)
+    console.print()
+    console.print(table)
+    while True:
+        raw = typer.prompt(f"  {field} (enter number)").strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return options[int(raw) - 1]
+        console.print(f"  [red]Choose a number from 1 to {len(options)}.[/red]")
+
+
+def _prompt_reads_library_metadata(console: Console, sample_count: int) -> ReadsLibraryMetadata:
+    """Prompt for sequencing library metadata shared across all reads manifests."""
+    _print_prompt_help(
+        console,
+        "Sequencing library metadata",
+        f"These values will be written into all {sample_count} manifest(s). "
+        "Select from the numbered lists for each field.",
+        show_prompt_tip=False,
+    )
+    platform = _prompt_from_list(console, "PLATFORM", VALID_PLATFORMS, "PLATFORM")
+    instruments = VALID_INSTRUMENTS.get(platform, ("unspecified",))
+    instrument = _prompt_from_list(console, f"INSTRUMENT  [{platform}]", instruments, "INSTRUMENT")
+    library_name = typer.prompt("  LIBRARY_NAME (free text identifier for this library set)").strip()
+    library_source = _prompt_from_list(console, "LIBRARY_SOURCE", VALID_LIBRARY_SOURCES, "LIBRARY_SOURCE")
+    library_selection = _prompt_from_list(console, "LIBRARY_SELECTION", VALID_LIBRARY_SELECTIONS, "LIBRARY_SELECTION")
+    library_strategy = _prompt_from_list(console, "LIBRARY_STRATEGY", VALID_LIBRARY_STRATEGIES, "LIBRARY_STRATEGY")
+    return ReadsLibraryMetadata(
+        platform=platform,
+        instrument=instrument,
+        library_name=library_name,
+        library_source=library_source,
+        library_selection=library_selection,
+        library_strategy=library_strategy,
+    )
 
 
 def _select_sample_alias(console: Console, samples: list[dict[str, str]]) -> str:
