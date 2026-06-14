@@ -789,6 +789,40 @@ class EnaTests(unittest.TestCase):
 
             self.assertEqual(samples, ["mysample"])
 
+    def test_validation_catches_empty_mandatory_field_from_field_type_row(self):
+        """#field_type row drives mandatory enforcement even when checklist has no fields."""
+        checklist = ena.fallback_checklist("ERC000022")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "samples.tsv"
+            path.write_text(
+                "#checklist_accession\tERC000022\n"
+                "sample_alias\tsample_title\ttaxon_id\tscientific_name\tcollection date\tbroad-scale environmental context\n"
+                "#units\t\t\t\t\t\n"
+                "#field_type\tmandatory\tmandatory\tmandatory\toptional\tmandatory\tmandatory\n"
+                "sample_1\tMy sample\t408169\tmetagenome\t\t\n"
+            )
+            errors, _, _, _ = ena.validate_metadata_tsv(path, checklist)
+
+        self.assertIn("Column 'collection date' is mandatory for ERC000022 but missing/empty in 1 row(s).", errors)
+        self.assertIn("Column 'broad-scale environmental context' is mandatory for ERC000022 but missing/empty in 1 row(s).", errors)
+
+    def test_validation_passes_when_all_field_type_mandatory_fields_are_filled(self):
+        """Validation succeeds when the #field_type row marks fields mandatory and they are filled."""
+        checklist = ena.fallback_checklist("ERC000022")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "samples.tsv"
+            path.write_text(
+                "#checklist_accession\tERC000022\n"
+                "sample_alias\tsample_title\ttaxon_id\tscientific_name\tcollection date\n"
+                "#units\t\t\t\t\n"
+                "#field_type\tmandatory\tmandatory\tmandatory\toptional\tmandatory\n"
+                "sample_1\tMy sample\t408169\tmetagenome\t2024-01-15\n"
+            )
+            errors, samples, _, _ = ena.validate_metadata_tsv(path, checklist)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(samples[0]["collection date"], "2024-01-15")
+
     def test_metadata_validation_groups_non_ascii_errors_by_column(self):
         checklist = ena.parse_checklist_xml(CHECKLIST_XML)
         with tempfile.TemporaryDirectory() as tmpdir:

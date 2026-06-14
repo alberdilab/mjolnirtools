@@ -2,6 +2,19 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.1.5 - 2026-06-14
+
+### Fixed
+
+- `validate_metadata_tsv` now enforces mandatory fields declared in the `#field_type`
+  row of the metadata TSV, in addition to those parsed from the live checklist
+  definition. Previously, if the ENA checklist fetch fell back to an empty definition,
+  no mandatory-field validation occurred and submissions were rejected by ENA with
+  "must have required property" errors for fields such as `collection date`,
+  `geographic location (latitude/longitude)`, `broad-scale environmental context`,
+  `local environmental context`, `environmental medium`, and
+  `geographic location (country and/or sea)`.
+
 ## 1.1.4 - 2026-06-14
 
 ### Added

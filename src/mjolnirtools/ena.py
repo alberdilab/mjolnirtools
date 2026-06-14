@@ -562,7 +562,7 @@ def write_metadata_template(
             writer.writerow(["sample_1", "TODO", "TODO", ""] + [""] * len(selected_fields))
 
 
-def read_metadata_tsv(path: Path) -> tuple[str, list[str], list[str], list[dict[str, str]]]:
+def read_metadata_tsv(path: Path) -> tuple[str, list[str], list[str], list[str], list[dict[str, str]]]:
     """Read an ENA metadata TSV created by this wizard."""
     rows: list[list[str]] = []
     with path.open(newline="") as fh:
@@ -578,15 +578,19 @@ def read_metadata_tsv(path: Path) -> tuple[str, list[str], list[str], list[dict[
     checklist_id = rows[0][1].strip().upper()
     headers = rows[1]
     units = rows[2]
+    field_types: list[str] = []
     samples: list[dict[str, str]] = []
     for row in rows[3:]:
         if not any(row):
+            continue
+        if row[0] == "#field_type":
+            field_types = row
             continue
         if row[0].startswith("#"):
             continue
         padded = row + [""] * (len(headers) - len(row))
         samples.append(dict(zip(headers, padded[: len(headers)])))
-    return checklist_id, headers, units, samples
+    return checklist_id, headers, units, field_types, samples
 
 
 def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], list[dict[str, str]], list[str], list[str]]:
@@ -596,7 +600,7 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
         errors.append("Metadata file must use .tsv or .tab extension.")
 
     try:
-        checklist_id, headers, units, samples = read_metadata_tsv(path)
+        checklist_id, headers, units, field_types, samples = read_metadata_tsv(path)
     except (OSError, ValueError) as exc:
         return [str(exc)], [], [], []
 
@@ -611,7 +615,19 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
     for header in missing_headers:
         errors.append(f"Required column is missing: {header}.")
 
-    mandatory_fields = [field.name for field in checklist.fields if field.mandatory]
+    # Determine mandatory fields from the checklist definition
+    checklist_mandatory: set[str] = {field.name for field in checklist.fields if field.mandatory}
+
+    # Also honour the #field_type row written into the TSV at template-generation time.
+    # This catches mandatory fields that were not parsed from the checklist (e.g. when the
+    # checklist fetch fell back to an empty definition) as well as fields the user added manually.
+    tsv_mandatory: set[str] = set()
+    if field_types and len(field_types) > 1:
+        for header, ftype in zip(headers, field_types[1:]):
+            if ftype.strip().lower() == "mandatory" and header not in BASE_SAMPLE_COLUMNS:
+                tsv_mandatory.add(header)
+
+    mandatory_fields = list(checklist_mandatory | tsv_mandatory)
     for field_name in mandatory_fields:
         if field_name not in headers:
             errors.append(f"Mandatory checklist column is missing: {field_name}.")
