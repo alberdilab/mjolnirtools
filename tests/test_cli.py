@@ -1,4 +1,5 @@
 import io
+import tempfile
 from pathlib import Path
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -453,6 +454,48 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         run_command.assert_called_once_with(["conda", "env", "list"])
+
+    def test_conda_export_dispatch_writes_environment_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "analysis.yml"
+            with mock.patch(
+                "mjolnirtools.cli.shell.run_command", return_value=0
+            ) as run_command:
+                exit_code = cli.main(
+                    ["conda", "export", "analysis", "-o", str(output)]
+                )
+
+        self.assertEqual(exit_code, 0)
+        command, kwargs = run_command.call_args
+        self.assertEqual(
+            command[0], ["conda", "env", "export", "--name", "analysis"]
+        )
+        self.assertIn("stdout", kwargs)
+
+    def test_conda_export_from_history_adds_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "analysis.yml"
+            with mock.patch(
+                "mjolnirtools.cli.shell.run_command", return_value=0
+            ) as run_command:
+                exit_code = cli.main(
+                    ["conda", "export", "analysis", "-o", str(output), "--from-history"]
+                )
+
+        self.assertEqual(exit_code, 0)
+        command, _ = run_command.call_args
+        self.assertEqual(
+            command[0],
+            ["conda", "env", "export", "--name", "analysis", "--from-history"],
+        )
+
+    def test_conda_export_requires_environment_name(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["conda", "export"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("mt conda export requires an environment name", stderr.getvalue())
 
     def test_conda_create_requires_environment_name(self):
         stderr = io.StringIO()

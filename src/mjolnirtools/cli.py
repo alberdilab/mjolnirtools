@@ -83,6 +83,7 @@ SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
         "  mt conda create <name>",
         "  mt conda remove <name>",
         "  mt conda list",
+        "  mt conda export <name> [-o <file>] [--from-history]",
     ],
     "system": [
         "Subcommands:",
@@ -216,6 +217,7 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
             ("mt conda create <name>", "Create a new Conda environment"),
             ("mt conda remove <name>", "Remove an existing Conda environment"),
             ("mt conda list", "List all available Conda environments"),
+            ("mt conda export <name>", "Export an environment so it can be replicated"),
         ],
     ),
     (
@@ -1014,17 +1016,36 @@ def conda_command(
     action: Annotated[
         str,
         typer.Argument(
-            help="Conda action: create, remove, or list.",
+            help="Conda action: create, remove, list, or export.",
             show_default=False,
         ),
     ],
     env_name: Annotated[
         str | None,
         typer.Argument(
-            help="Environment name for 'create' or 'remove'.",
+            help="Environment name for 'create', 'remove', or 'export'.",
             show_default=False,
         ),
     ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="File to write the exported environment to (default: <name>.yml).",
+            show_default=False,
+        ),
+    ] = None,
+    from_history: Annotated[
+        bool,
+        typer.Option(
+            "--from-history",
+            help=(
+                "Export only explicitly requested packages, without build strings. "
+                "More portable across operating systems."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run a Conda environment command."""
     if action == "list":
@@ -1039,8 +1060,23 @@ def conda_command(
         if env_name is None:
             raise click.UsageError("mt conda remove requires an environment name.")
         command = shell.build_conda_remove_command(env_name)
+    elif action == "export":
+        if env_name is None:
+            raise click.UsageError("mt conda export requires an environment name.")
+        command = shell.build_conda_export_command(env_name, from_history=from_history)
+        destination = Path(output) if output is not None else Path(f"{env_name}.yml")
+        try:
+            with destination.open("w", encoding="utf-8") as handle:
+                exit_code = shell.run_command(command, stdout=handle)
+        except OSError as error:
+            raise click.UsageError(f"Could not write to {destination}: {error}")
+        if exit_code == 0:
+            typer.echo(f"Exported environment '{env_name}' to {destination}.")
+        raise typer.Exit(exit_code)
     else:
-        raise click.UsageError("Use one of: mt conda create <name>, remove <name>, list.")
+        raise click.UsageError(
+            "Use one of: mt conda create <name>, remove <name>, list, export <name>."
+        )
 
     raise typer.Exit(shell.run_command(command))
 

@@ -202,6 +202,18 @@ class ShellCommandTests(unittest.TestCase):
     def test_conda_list_command_lists_environments(self):
         self.assertEqual(shell.build_conda_list_command(), ["conda", "env", "list"])
 
+    def test_conda_export_command_uses_environment_name(self):
+        self.assertEqual(
+            shell.build_conda_export_command("analysis"),
+            ["conda", "env", "export", "--name", "analysis"],
+        )
+
+    def test_conda_export_command_supports_from_history(self):
+        self.assertEqual(
+            shell.build_conda_export_command("analysis", from_history=True),
+            ["conda", "env", "export", "--name", "analysis", "--from-history"],
+        )
+
     def test_blank_conda_environment_name_is_rejected(self):
         with self.assertRaises(ValueError):
             shell.build_conda_create_command("")

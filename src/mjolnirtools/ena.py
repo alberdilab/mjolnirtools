@@ -295,6 +295,10 @@ class ChecklistField:
     mandatory: bool
     units: tuple[str, ...] = ()
     description: str = ""
+    # Controlled vocabulary: the only values ENA accepts for a TEXT_CHOICE_FIELD.
+    choices: tuple[str, ...] = ()
+    # Anchored regular expression ENA enforces for a TEXT_FIELD, if any.
+    regex: str = ""
 
 
 @dataclass(frozen=True)
@@ -414,6 +418,13 @@ def parse_checklist_xml(xml_text: str, fallback_accession: str = "") -> Checklis
             for unit in field.findall("./UNITS/UNIT")
             if unit.text and unit.text.strip()
         )
+        choices = tuple(
+            value.text.strip()
+            for value in field.findall("./FIELD_TYPE/TEXT_CHOICE_FIELD/TEXT_VALUE/VALUE")
+            if value.text and value.text.strip()
+        )
+        regex_node = field.find("./FIELD_TYPE/TEXT_FIELD/REGEX_VALUE")
+        regex = regex_node.text.strip() if regex_node is not None and regex_node.text else ""
         fields.append(
             ChecklistField(
                 name=name,
@@ -421,6 +432,8 @@ def parse_checklist_xml(xml_text: str, fallback_accession: str = "") -> Checklis
                 mandatory=mandatory,
                 units=units,
                 description=_node_text(field, "DESCRIPTION"),
+                choices=choices,
+                regex=regex,
             )
         )
 
@@ -624,6 +637,75 @@ def read_metadata_tsv(path: Path) -> tuple[str, list[str], list[str], list[str],
     return checklist_id, headers, units, field_types, samples
 
 
+def _checklist_field_choice(field: ChecklistField, value: str) -> str | None:
+    """Return the canonical checklist choice matching value, or None if none fits.
+
+    Matching is exact first, then case-insensitive with collapsed surrounding/inner
+    whitespace, so values that differ only in capitalisation or spacing (e.g.
+    "Heterotroph" or "free  living") map back to the ENA-approved spelling.
+    """
+    if value in field.choices:
+        return value
+
+    def _norm(text: str) -> str:
+        return " ".join(text.lower().split())
+
+    normalized = _norm(value)
+    for choice in field.choices:
+        if _norm(choice) == normalized:
+            return choice
+    return None
+
+
+def autofix_metadata_tsv(path: Path, checklist: Checklist) -> list[str]:
+    """Normalise controlled-vocabulary values in place; return applied fixes.
+
+    Only safe, unambiguous rewrites are made: a value that matches an ENA checklist
+    choice apart from capitalisation or whitespace is replaced with the canonical
+    choice. Values that cannot be matched are left untouched for validation to flag.
+    """
+    try:
+        checklist_id, headers, units, field_types, samples = read_metadata_tsv(path)
+    except (OSError, ValueError):
+        return []
+
+    fields_by_name = {field.name: field for field in checklist.fields}
+    rows: list[list[str]] = []
+    with path.open(newline="") as fh:
+        rows = [list(row) for row in csv.reader(fh, delimiter="\t")]
+
+    fixes: list[str] = []
+    header_index = {header: idx for idx, header in enumerate(headers)}
+    # Sample rows are everything after the directive rows; locate them by alias.
+    for row in rows:
+        if not row or row[0].startswith("#"):
+            continue
+        if row[0] == headers[0] and "sample_title" in row:
+            continue  # the header row itself
+        alias = row[0].strip()
+        for header, field in fields_by_name.items():
+            if not field.choices or header not in header_index:
+                continue
+            col = header_index[header]
+            if col >= len(row):
+                continue
+            original = row[col]
+            stripped = original.strip()
+            if not stripped:
+                continue
+            canonical = _checklist_field_choice(field, stripped)
+            if canonical is not None and canonical != original:
+                row[col] = canonical
+                fixes.append(
+                    f"Sample '{alias}', column '{header}': '{original}' -> '{canonical}'."
+                )
+
+    if fixes:
+        with path.open("w", newline="") as fh:
+            csv.writer(fh, delimiter="\t", lineterminator="\n").writerows(rows)
+    return fixes
+
+
 def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], list[dict[str, str]], list[str], list[str]]:
     """Validate a completed metadata TSV and return errors plus parsed rows."""
     errors: list[str] = []
@@ -669,6 +751,12 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
     non_ascii_cols: dict[str, tuple[set[str], int]] = {}
     invalid_dates: list[str] = []
     date_header = next((h for h in COLLECTION_DATE_HEADERS if h in headers), None)
+
+    # Checklist fields with controlled vocabularies or regex patterns. ENA enforces
+    # these server-side and rejects the whole submission, so check them here first.
+    fields_by_name = {field.name: field for field in checklist.fields}
+    invalid_choice_cols: dict[str, set[str]] = {}
+    invalid_regex_cols: dict[str, set[str]] = {}
     for row_index, sample in enumerate(samples, start=4):
         alias = sample.get("sample_alias", "").strip()
         if not alias:
@@ -694,6 +782,14 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
             date_value = sample.get(date_header, "").strip()
             if date_value and not _is_valid_collection_date(date_value):
                 invalid_dates.append(date_value)
+        for field_name, field in fields_by_name.items():
+            value = sample.get(field_name, "").strip()
+            if not value:
+                continue  # empty optional values are fine; mandatory emptiness is caught above
+            if field.choices and _checklist_field_choice(field, value) is None:
+                invalid_choice_cols.setdefault(field_name, set()).add(value)
+            elif field.regex and not re.fullmatch(field.regex, value):
+                invalid_regex_cols.setdefault(field_name, set()).add(value)
 
     for column, row_count in missing_base_cols.items():
         errors.append(f"Column '{column}' is required but missing/empty in {row_count} row(s).")
@@ -714,6 +810,21 @@ def validate_metadata_tsv(path: Path, checklist: Checklist) -> tuple[list[str], 
             f"Column '{date_header}' has {len(invalid_dates)} value(s) that are not ENA "
             "collection dates. Use ISO 8601 (YYYY, YYYY-MM, or YYYY-MM-DD), a '/'-separated "
             f"range, or an accepted missing-value term. Invalid: {examples}."
+        )
+    for field_name, bad_values in invalid_choice_cols.items():
+        field = fields_by_name[field_name]
+        invalid = ", ".join(repr(v) for v in sorted(bad_values)[:5])
+        allowed = ", ".join(field.choices)
+        errors.append(
+            f"Column '{field_name}' has value(s) ENA does not allow: {invalid}. "
+            f"Must be one of: {allowed}."
+        )
+    for field_name, bad_values in invalid_regex_cols.items():
+        field = fields_by_name[field_name]
+        invalid = ", ".join(repr(v) for v in sorted(bad_values)[:5])
+        errors.append(
+            f"Column '{field_name}' has value(s) that do not match the ENA pattern "
+            f"'{field.regex}': {invalid}."
         )
 
     if not samples:
@@ -1437,6 +1548,15 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
         metadata_path = Path(
             typer.prompt("  Completed metadata TSV", default=str(metadata_template))
         ).expanduser().resolve()
+        applied_fixes = autofix_metadata_tsv(metadata_path, checklist)
+        if applied_fixes:
+            console.print(
+                f"  [green]Auto-corrected {len(applied_fixes)} controlled-vocabulary value(s):[/green]"
+            )
+            for fix in applied_fixes[:10]:
+                console.print(f"    - {fix}")
+            if len(applied_fixes) > 10:
+                console.print(f"    ... and {len(applied_fixes) - 10} more")
         errors, samples, headers, units = validate_metadata_tsv(metadata_path, checklist)
         if errors:
             console.print("[bold red]Metadata validation failed:[/bold red]")

@@ -38,6 +38,50 @@ CHECKLIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+CHECKLIST_XML_WITH_CONSTRAINTS = """<?xml version="1.0" encoding="UTF-8"?>
+<CHECKLIST_SET>
+  <CHECKLIST accession="ERC000025" checklistType="Sample">
+    <DESCRIPTOR>
+      <LABEL>Constrained checklist</LABEL>
+      <FIELD_GROUP>
+        <FIELD>
+          <LABEL>relationship to oxygen</LABEL>
+          <NAME>relationship_to_oxygen</NAME>
+          <FIELD_TYPE>
+            <TEXT_CHOICE_FIELD>
+              <TEXT_VALUE><VALUE>aerobe</VALUE></TEXT_VALUE>
+              <TEXT_VALUE><VALUE>anaerobe</VALUE></TEXT_VALUE>
+              <TEXT_VALUE><VALUE>facultative</VALUE></TEXT_VALUE>
+            </TEXT_CHOICE_FIELD>
+          </FIELD_TYPE>
+          <MANDATORY>optional</MANDATORY>
+        </FIELD>
+        <FIELD>
+          <LABEL>number of replicons</LABEL>
+          <NAME>number_of_replicons</NAME>
+          <FIELD_TYPE>
+            <TEXT_FIELD>
+              <REGEX_VALUE>[+-]?[0-9]+</REGEX_VALUE>
+            </TEXT_FIELD>
+          </FIELD_TYPE>
+          <MANDATORY>optional</MANDATORY>
+        </FIELD>
+      </FIELD_GROUP>
+    </DESCRIPTOR>
+  </CHECKLIST>
+</CHECKLIST_SET>
+"""
+
+
+def _constrained_tsv(path, oxygen_value, replicons_value):
+    path.write_text(
+        "#checklist_accession\tERC000025\n"
+        "sample_alias\tsample_title\ttaxon_id\tscientific_name\trelationship_to_oxygen\tnumber_of_replicons\n"
+        "#units\t\t\t\t\t\n"
+        f"sample9\tTitle\t9606\tHomo sapiens\t{oxygen_value}\t{replicons_value}\n"
+    )
+
+
 class EnaTests(unittest.TestCase):
     def test_parse_checklist_xml_extracts_fields(self):
         checklist = ena.parse_checklist_xml(CHECKLIST_XML)
@@ -47,6 +91,65 @@ class EnaTests(unittest.TestCase):
         self.assertEqual(checklist.fields[0].name, "project_name")
         self.assertTrue(checklist.fields[0].mandatory)
         self.assertEqual(checklist.fields[1].units, ("C",))
+
+    def test_parse_checklist_xml_extracts_choices_and_regex(self):
+        checklist = ena.parse_checklist_xml(CHECKLIST_XML_WITH_CONSTRAINTS)
+        by_name = {field.name: field for field in checklist.fields}
+
+        self.assertEqual(
+            by_name["relationship_to_oxygen"].choices,
+            ("aerobe", "anaerobe", "facultative"),
+        )
+        self.assertEqual(by_name["number_of_replicons"].regex, "[+-]?[0-9]+")
+
+    def test_validation_flags_controlled_vocabulary_and_regex_violations(self):
+        checklist = ena.parse_checklist_xml(CHECKLIST_XML_WITH_CONSTRAINTS)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "samples.tsv"
+            _constrained_tsv(path, "BADVALUE", "notanumber")
+            errors, _, _, _ = ena.validate_metadata_tsv(path, checklist)
+
+        self.assertTrue(
+            any("relationship_to_oxygen" in e and "'BADVALUE'" in e for e in errors),
+            errors,
+        )
+        self.assertTrue(
+            any("number_of_replicons" in e and "[+-]?[0-9]+" in e for e in errors),
+            errors,
+        )
+
+    def test_validation_accepts_valid_controlled_vocabulary_and_regex(self):
+        checklist = ena.parse_checklist_xml(CHECKLIST_XML_WITH_CONSTRAINTS)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "samples.tsv"
+            _constrained_tsv(path, "aerobe", "3")
+            errors, _, _, _ = ena.validate_metadata_tsv(path, checklist)
+
+        self.assertEqual(errors, [])
+
+    def test_autofix_normalises_controlled_vocabulary_case(self):
+        checklist = ena.parse_checklist_xml(CHECKLIST_XML_WITH_CONSTRAINTS)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "samples.tsv"
+            _constrained_tsv(path, "Aerobe", "3")
+            fixes = ena.autofix_metadata_tsv(path, checklist)
+            errors, samples, _, _ = ena.validate_metadata_tsv(path, checklist)
+
+        self.assertEqual(len(fixes), 1)
+        self.assertIn("'Aerobe' -> 'aerobe'", fixes[0])
+        self.assertEqual(errors, [])
+        self.assertEqual(samples[0]["relationship_to_oxygen"], "aerobe")
+
+    def test_autofix_leaves_unmatchable_values_untouched(self):
+        checklist = ena.parse_checklist_xml(CHECKLIST_XML_WITH_CONSTRAINTS)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "samples.tsv"
+            _constrained_tsv(path, "BADVALUE", "3")
+            fixes = ena.autofix_metadata_tsv(path, checklist)
+            samples = ena.validate_metadata_tsv(path, checklist)[1]
+
+        self.assertEqual(fixes, [])
+        self.assertEqual(samples[0]["relationship_to_oxygen"], "BADVALUE")
 
     def test_metadata_template_and_validation(self):
         checklist = ena.parse_checklist_xml(CHECKLIST_XML)

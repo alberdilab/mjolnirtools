@@ -207,6 +207,16 @@ def build_conda_list_command() -> list[str]:
     return ["conda", "env", "list"]
 
 
+def build_conda_export_command(
+    env_name: str, from_history: bool = False
+) -> list[str]:
+    """Build the command that exports a Conda environment specification."""
+    command = ["conda", "env", "export", "--name", validate_conda_env_name(env_name)]
+    if from_history:
+        command.append("--from-history")
+    return command
+
+
 def build_permissions_exec_command(path: str, recursive: bool) -> list[list[str]]:
     """Build the command(s) that make a path executable."""
     if recursive:
@@ -391,13 +401,17 @@ def run_commands(commands: list[list[str]]) -> int:
     return 0
 
 
-def run_command(command: Sequence[str], stderr: TextIO | None = None) -> int:
+def run_command(
+    command: Sequence[str],
+    stderr: TextIO | None = None,
+    stdout: TextIO | None = None,
+) -> int:
     """Run a local command list and return its exit code."""
     err = stderr if stderr is not None else sys.stderr
     executable = command[0] if command else "command"
 
     try:
-        completed = subprocess.run(command, shell=False, check=False)
+        completed = subprocess.run(command, shell=False, check=False, stdout=stdout)
     except FileNotFoundError:
         print(f"Error: '{executable}' was not found in PATH.", file=err)
         return 127

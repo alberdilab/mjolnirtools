@@ -2,6 +2,28 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.1.7 - 2026-06-18
+
+### Added
+
+- `mt conda export <name>` exports a Conda environment specification so it can be
+  replicated elsewhere. It writes to `<name>.yml` by default (override with
+  `-o` / `--output`) and supports `--from-history` for a more portable file that
+  lists only explicitly requested packages without build strings. The exported
+  file can be recreated with `conda env create -f <name>.yml`.
+- Checklist parsing now captures each field's controlled vocabulary
+  (`TEXT_CHOICE_FIELD` choices) and regular-expression constraint (`TEXT_FIELD`
+  `REGEX_VALUE`). `validate_metadata_tsv` enforces both before submission, so values
+  such as an invalid `trophic level`, `relationship to oxygen`, or a non-numeric
+  `number of replicons` are rejected locally with the allowed values or expected
+  pattern shown — instead of failing server-side with "must be equal to one of the
+  allowed values" / "must match pattern" errors at the BioSamples submission stage.
+- `autofix_metadata_tsv` normalises controlled-vocabulary values that differ from an
+  ENA choice only in capitalisation or whitespace (for example `Aerobe` → `aerobe`),
+  rewriting the TSV in place and reporting each correction. The transfer wizard runs
+  this automatically before validating the completed metadata TSV. Values that cannot
+  be matched unambiguously are left untouched for validation to flag.
+
 ## 1.1.6 - 2026-06-14
 
 ### Fixed
