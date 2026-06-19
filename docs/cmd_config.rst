@@ -207,3 +207,40 @@ After setup, deposits can be scripted from the cluster:
        "https://zenodo.org/api/deposit/depositions",
        headers={"Authorization": f'Bearer {os.environ["ZENODO_TOKEN"]}'},
    )
+
+``mt config shell``
+-------------------
+
+Install the shell integration that lets :doc:`mt cd <cmd_cd>` change the
+current shell directory.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt config shell
+
+A command cannot change the working directory of the shell that launched it, so
+``mt cd`` relies on a small shell function. The wizard appends that function to
+your shell profile (``~/.zshrc``, ``~/.bashrc``, ``~/.bash_profile``, or
+``~/.profile``, detected from ``$SHELL``), guarded by marker comments:
+
+.. code-block:: bash
+
+   # >>> mjolnirtools shell integration >>>
+   mt() {
+     if [ "$1" = "cd" ]; then
+       shift
+       local __mt_dir
+       __mt_dir=$(command mt cd --print "$@") && cd "$__mt_dir"
+     else
+       command mt "$@"
+     fi
+   }
+   # ... same wrapper for the mjolnirtools alias ...
+   # <<< mjolnirtools shell integration <<<
+
+The function intercepts only ``mt cd`` / ``mjolnirtools cd``; every other
+command is passed through unchanged via ``command``. If the integration is
+already present, the wizard leaves the profile untouched. Run
+``source <profile>`` or open a new terminal to activate it.

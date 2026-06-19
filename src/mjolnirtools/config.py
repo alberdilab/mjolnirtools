@@ -34,6 +34,32 @@ _ENA_CREDENTIALS_FILE = _ENA_CONFIG_DIR / "credentials"
 _ENA_CREDENTIALS_DIR = _ENA_CONFIG_DIR / "credentials.d"
 _MJOLNIR_HPC_HOSTNAME = "mjolnirgate.unicph.domain"
 
+_SHELL_HOOK_START = "# >>> mjolnirtools shell integration >>>"
+_SHELL_HOOK_END = "# <<< mjolnirtools shell integration <<<"
+
+
+def _shell_hook_block() -> str:
+    """Return the shell function block that powers ``mt cd``."""
+    lines = [_SHELL_HOOK_START]
+    lines.append(
+        "# Lets 'mt cd <target>' / 'mjolnirtools cd <target>' change the current"
+    )
+    lines.append("# shell directory. All other commands pass through unchanged.")
+    for name in ("mt", "mjolnirtools"):
+        lines += [
+            f"{name}() {{",
+            '  if [ "$1" = "cd" ]; then',
+            "    shift",
+            "    local __mt_dir",
+            f'    __mt_dir=$(command {name} cd --print "$@") && cd "$__mt_dir"',
+            "  else",
+            f'    command {name} "$@"',
+            "  fi",
+            "}",
+        ]
+    lines.append(_SHELL_HOOK_END)
+    return "\n".join(lines)
+
 
 @dataclass(frozen=True)
 class EnaCredentials:
@@ -979,6 +1005,57 @@ def run_zenodo_setup() -> int:
         "  [bold]import os, requests[/bold]\n"
         "  [bold]r = requests.get('https://zenodo.org/api/deposit/depositions',[/bold]\n"
         "  [bold]      headers={'Authorization': f'Bearer {os.environ[\"ZENODO_TOKEN\"]}'})[/bold]",
+        border_style="bold green",
+    ))
+    return 0
+
+
+def run_shell_setup() -> int:
+    """Install the shell integration that makes ``mt cd`` change directories."""
+    console = Console()
+    profile = _detect_shell_profile()
+
+    console.print()
+    console.print(Panel(
+        "[bold]Shell Integration Setup[/bold]\n\n"
+        "[bold]mt cd <target>[/bold] resolves common project and home\n"
+        "directories, but a command cannot change its parent shell's\n"
+        "directory on its own. This wizard adds a small shell function\n"
+        "to your profile so [bold]mt cd[/bold] can move you directly.\n\n"
+        "Targets:\n"
+        "  [cyan]mt cd scratch[/cyan]  → your project scratch directory\n"
+        "  [cyan]mt cd people[/cyan]   → the project people directory\n"
+        "  [cyan]mt cd project[/cyan]  → your directory under people\n"
+        "  [cyan]mt cd data[/cyan]     → the project data directory\n"
+        "  [cyan]mt cd home[/cyan]     → your home directory",
+        title="mt config shell",
+        title_align="left",
+        border_style="bold cyan",
+    ))
+
+    console.print()
+    if profile.exists() and _SHELL_HOOK_START in profile.read_text():
+        console.print(
+            f"  [green]Shell integration is already present in {profile}.[/green]"
+        )
+        console.print(
+            f"  [dim]Run [bold]source {profile}[/bold] or open a new terminal "
+            "to activate it.[/dim]"
+        )
+        return 0
+
+    with profile.open("a") as fh:
+        fh.write("\n" + _shell_hook_block() + "\n")
+    console.print(f"  [green]Added the mjolnirtools shell function to {profile}.[/green]")
+
+    console.print()
+    console.print(Panel(
+        "[bold green]Setup complete![/bold green]\n\n"
+        f"Run [bold]source {profile}[/bold] or open a new terminal, then try:\n"
+        "  [bold]mt cd scratch[/bold]\n\n"
+        "Use [bold]--project[/bold] or [bold]--user[/bold] to override the\n"
+        "current project and user, for example:\n"
+        "  [bold]mt cd people --project earthhologenome[/bold]",
         border_style="bold green",
     ))
     return 0

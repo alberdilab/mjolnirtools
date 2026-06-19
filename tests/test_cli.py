@@ -1189,6 +1189,61 @@ class CliTests(unittest.TestCase):
         self.assertIn("mt config ena", stderr.getvalue())
         self.assertNotIn("Usage:", stderr.getvalue())
 
+    def test_cd_print_outputs_resolved_path_only(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("mjolnirtools.cli.shell.resolve_project", return_value="alberdilab"), \
+                mock.patch("mjolnirtools.cli.shell.resolve_user", return_value="antton"):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = cli.main(["cd", "home", "--print"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stdout.getvalue().strip(), "/home/antton")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_cd_without_print_shows_integration_tip(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("mjolnirtools.cli.shell.resolve_project", return_value="alberdilab"), \
+                mock.patch("mjolnirtools.cli.shell.resolve_user", return_value="antton"):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = cli.main(["cd", "people"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stdout.getvalue().strip(), "/projects/alberdilab/people")
+        self.assertIn("mt config shell", stderr.getvalue())
+
+    def test_cd_honours_project_and_user_overrides(self):
+        stdout = io.StringIO()
+        with mock.patch("mjolnirtools.cli.shell.resolve_project") as resolve_project:
+            with redirect_stdout(stdout):
+                exit_code = cli.main(
+                    ["cd", "project", "--print", "--project", "earthhologenome", "--user", "lisa"]
+                )
+
+        self.assertEqual(exit_code, 0)
+        resolve_project.assert_not_called()
+        self.assertEqual(
+            stdout.getvalue().strip(), "/projects/earthhologenome/people/lisa"
+        )
+
+    def test_cd_rejects_unknown_target(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["cd", "elsewhere", "--print"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("scratch", stderr.getvalue())
+
+    def test_config_shell_dispatches_to_setup(self):
+        with mock.patch(
+            "mjolnirtools.cli.config_module.run_shell_setup", return_value=0
+        ) as run_setup:
+            exit_code = cli.main(["config", "shell"])
+
+        self.assertEqual(exit_code, 0)
+        run_setup.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

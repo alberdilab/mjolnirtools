@@ -2,6 +2,24 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.2.0 - 2026-06-19
+
+### Added
+
+- `mt cd <target>` resolves and moves to common cluster directories. Targets are
+  `scratch` (`/projects/<project>/scratch/<user>`, falling back to the shared
+  `/projects/<project>/scratch` when the per-user directory does not exist),
+  `people` (`/projects/<project>/people`), `project`
+  (`/projects/<project>/people/<user>`), `data` (`/projects/<project>/data`),
+  and `home` (`/home/<user>`). The project defaults to the one derived from the
+  current directory (anything under `/projects/<id>/`, otherwise `alberdilab`)
+  and the user defaults to `$USER`; both can be overridden with `--project` and
+  `--user`.
+- `mt config shell` installs a small shell function in your profile so `mt cd`
+  can change the current shell directory. A command cannot change its parent
+  shell's working directory on its own, so without this integration `mt cd`
+  prints the resolved path instead (usable as `cd "$(mt cd scratch)"`).
+
 ## 1.1.7 - 2026-06-18
 
 ### Added

@@ -67,6 +67,18 @@ SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
         "  mt config github",
         "  mt config ncbi",
         "  mt config zenodo",
+        "  mt config shell",
+    ],
+    "cd": [
+        "Targets:",
+        "  mt cd scratch",
+        "  mt cd people",
+        "  mt cd project",
+        "  mt cd data",
+        "  mt cd home",
+        "Options:",
+        "  --project <id>   Override the project (default: from current directory)",
+        "  --user <id>      Override the user (default: $USER)",
     ],
     "move": [
         "Subcommands:",
@@ -196,6 +208,21 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        "Navigation",
+        (
+            "Jump to common project and home directories. "
+            "Defaults to the current project and user; override with --project / --user. "
+            "Run 'mt config shell' once to enable directory changes."
+        ),
+        [
+            ("mt cd scratch", "Go to your project scratch directory"),
+            ("mt cd people", "Go to the project people directory"),
+            ("mt cd project", "Go to your directory under people"),
+            ("mt cd data", "Go to the project data directory"),
+            ("mt cd home", "Go to your home directory"),
+        ],
+    ),
+    (
         "Screen sessions",
         (
             "Manage persistent terminal screen sessions on the cluster. "
@@ -249,6 +276,7 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
             ("mt config github", "Set up SSH access to GitHub (github.com)"),
             ("mt config ncbi", "Configure NCBI API key and SRA Toolkit cache"),
             ("mt config zenodo", "Configure Zenodo personal access token"),
+            ("mt config shell", "Enable 'mt cd' to change your shell directory"),
         ],
     ),
     (
@@ -1156,6 +1184,69 @@ def system_command(
 
 
 @app.command(
+    name="cd",
+    add_help_option=False,
+    rich_help_panel="Navigation",
+    help="Resolve and move to a common project or home directory.",
+)
+def cd_command(
+    target: Annotated[
+        str,
+        typer.Argument(
+            help="Where to go: scratch, people, project, data, or home.",
+            show_default=False,
+        ),
+    ],
+    project: Annotated[
+        str | None,
+        typer.Option(
+            "--project",
+            help="Override the project id (default: derived from the current directory).",
+            show_default=False,
+        ),
+    ] = None,
+    user: Annotated[
+        str | None,
+        typer.Option(
+            "--user",
+            help="Override the user id (default: $USER).",
+            show_default=False,
+        ),
+    ] = None,
+    print_path: Annotated[
+        bool,
+        typer.Option(
+            "--print",
+            help="Print the resolved path only (used by the shell integration).",
+        ),
+    ] = False,
+) -> None:
+    """Resolve a navigation target to an absolute path.
+
+    The shell integration installed by ``mt config shell`` calls this with
+    ``--print`` and changes directory to the result. Without that integration,
+    the resolved path is printed so it can be used as ``cd "$(mt cd scratch)"``.
+    """
+    project_id = project or shell.resolve_project()
+    user_id = shell.resolve_user(user)
+
+    try:
+        destination = shell.build_cd_path(target, project_id, user_id)
+    except ValueError as exc:
+        raise click.UsageError(str(exc))
+
+    typer.echo(destination)
+
+    if not print_path:
+        Console(stderr=True).print(
+            "[dim]Tip: run [bold]mt config shell[/bold] so 'mt cd' changes your "
+            "shell directory automatically.[/dim]"
+        )
+
+    raise typer.Exit(0)
+
+
+@app.command(
     name="move",
     add_help_option=False,
     rich_help_panel="File operations",
@@ -1370,7 +1461,7 @@ def config_command(
     service: Annotated[
         str,
         typer.Argument(
-            help="Service to configure: erda, ena, github, ncbi, or zenodo.",
+            help="Service to configure: erda, ena, github, ncbi, zenodo, or shell.",
             show_default=False,
         ),
     ] = "erda",
@@ -1386,7 +1477,9 @@ def config_command(
         raise typer.Exit(config_module.run_ncbi_setup())
     if service == "zenodo":
         raise typer.Exit(config_module.run_zenodo_setup())
-    raise click.UsageError("Use one of: mt config erda, mt config ena, mt config github, mt config ncbi, mt config zenodo")
+    if service == "shell":
+        raise typer.Exit(config_module.run_shell_setup())
+    raise click.UsageError("Use one of: mt config erda, mt config ena, mt config github, mt config ncbi, mt config zenodo, mt config shell")
 
 
 @app.command(

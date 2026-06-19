@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import getpass
 import glob as _glob
 import os
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TextIO
 
@@ -277,6 +278,67 @@ def build_permissions_fix_command(
 
 PEOPLE_BASE = "/projects/alberdilab/people"
 SCRATCH_BASE = "/projects/alberdilab/scratch"
+
+PROJECTS_ROOT = "/projects"
+HOME_ROOT = "/home"
+DEFAULT_PROJECT = "alberdilab"
+VALID_CD_TARGETS = ("scratch", "people", "project", "data", "home")
+
+
+def resolve_project(cwd: str | None = None) -> str:
+    """Return the project id derived from *cwd*, or the default project.
+
+    A working directory under ``/projects/<id>/...`` yields ``<id>``; anything
+    else (for example a home directory) falls back to ``DEFAULT_PROJECT``.
+    """
+    raw = cwd if cwd is not None else os.getcwd()
+    parts = Path(raw).parts
+    if len(parts) >= 3 and parts[0] == os.sep and parts[1] == "projects":
+        return parts[2]
+    return DEFAULT_PROJECT
+
+
+def resolve_user(user: str | None = None) -> str:
+    """Return *user* if given, otherwise the current login user."""
+    if user:
+        return user
+    name = os.environ.get("USER") or os.environ.get("LOGNAME")
+    if name:
+        return name
+    return getpass.getuser()
+
+
+def build_cd_path(
+    target: str,
+    project: str,
+    user: str,
+    is_dir: Callable[[str], bool] = os.path.isdir,
+) -> str:
+    """Resolve a ``mt cd`` *target* to an absolute path for the given context.
+
+    ``scratch`` resolves to the user's personal scratch directory when it
+    exists, falling back to the shared project scratch directory otherwise.
+    """
+    name = target.lower()
+    if name == "home":
+        return f"{HOME_ROOT}/{user}"
+
+    project_root = f"{PROJECTS_ROOT}/{project}"
+    if name == "people":
+        return f"{project_root}/people"
+    if name == "project":
+        return f"{project_root}/people/{user}"
+    if name == "data":
+        return f"{project_root}/data"
+    if name == "scratch":
+        user_scratch = f"{project_root}/scratch/{user}"
+        if is_dir(user_scratch):
+            return user_scratch
+        return f"{project_root}/scratch"
+
+    raise ValueError(
+        "Target must be one of: scratch, people, project, data, home."
+    )
 
 
 def derive_scratch_destination(source: str) -> str:

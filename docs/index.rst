@@ -47,6 +47,7 @@ section is a per-topic reference you can keep open while working.
    cmd_list
    cmd_permissions
    cmd_move
+   cmd_cd
    cmd_screen
    cmd_conda
    cmd_system

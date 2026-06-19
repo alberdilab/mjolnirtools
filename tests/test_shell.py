@@ -261,6 +261,59 @@ class ShellCommandTests(unittest.TestCase):
         self.assertIn("ERROR: Transfer failed. Source was NOT deleted.", script)
         self.assertIn("exit $UPLOAD_RC", script)
 
+    def test_resolve_project_uses_directory_under_projects(self):
+        self.assertEqual(
+            shell.resolve_project("/projects/earthhologenome/people/antton"),
+            "earthhologenome",
+        )
+
+    def test_resolve_project_falls_back_to_default_outside_projects(self):
+        self.assertEqual(shell.resolve_project("/home/antton"), shell.DEFAULT_PROJECT)
+
+    def test_resolve_user_prefers_explicit_value(self):
+        self.assertEqual(shell.resolve_user("someone"), "someone")
+
+    def test_resolve_user_reads_user_environment_variable(self):
+        with mock.patch.dict("os.environ", {"USER": "antton"}, clear=False):
+            self.assertEqual(shell.resolve_user(), "antton")
+
+    def test_build_cd_path_home(self):
+        self.assertEqual(shell.build_cd_path("home", "alberdilab", "antton"), "/home/antton")
+
+    def test_build_cd_path_people(self):
+        self.assertEqual(
+            shell.build_cd_path("people", "alberdilab", "antton"),
+            "/projects/alberdilab/people",
+        )
+
+    def test_build_cd_path_project_is_user_people_directory(self):
+        self.assertEqual(
+            shell.build_cd_path("project", "alberdilab", "antton"),
+            "/projects/alberdilab/people/antton",
+        )
+
+    def test_build_cd_path_data(self):
+        self.assertEqual(
+            shell.build_cd_path("data", "alberdilab", "antton"),
+            "/projects/alberdilab/data",
+        )
+
+    def test_build_cd_path_scratch_uses_user_directory_when_present(self):
+        path = shell.build_cd_path(
+            "scratch", "alberdilab", "antton", is_dir=lambda p: True
+        )
+        self.assertEqual(path, "/projects/alberdilab/scratch/antton")
+
+    def test_build_cd_path_scratch_falls_back_to_shared_directory(self):
+        path = shell.build_cd_path(
+            "scratch", "alberdilab", "antton", is_dir=lambda p: False
+        )
+        self.assertEqual(path, "/projects/alberdilab/scratch")
+
+    def test_build_cd_path_rejects_unknown_target(self):
+        with self.assertRaises(ValueError):
+            shell.build_cd_path("nowhere", "alberdilab", "antton")
+
 
 if __name__ == "__main__":
     unittest.main()
