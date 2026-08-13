@@ -1,3 +1,5 @@
+import contextlib
+import os
 import tempfile
 import unittest
 import urllib.error
@@ -810,90 +812,12 @@ class EnaTests(unittest.TestCase):
             for f in files:
                 f.touch()
 
-            console = Console(file=StringIO(), width=100)
+            console = Console(file=StringIO(), width=200)
             ena._report_file_detection(console, files, max_show=3)
             output = console.file.getvalue()
 
             self.assertIn("10 data file(s)", output)
             self.assertIn("+7 more", output)
-
-    def test_extract_sample_names_removes_extensions_and_paired_indicators(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base = Path(tmpdir)
-            files = [
-                base / "sample1_R1.fastq.gz",
-                base / "sample1_R2.fastq.gz",
-                base / "sample2_1.fq.gz",
-                base / "sample2_2.fq.gz",
-                base / "sample3.fasta",
-            ]
-            for f in files:
-                f.touch()
-
-            samples = ena.extract_sample_names(files)
-
-            self.assertEqual(samples, ["sample1", "sample2", "sample3"])
-
-    def test_extract_sample_names_handles_various_extensions(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base = Path(tmpdir)
-            files = [
-                base / "reads.fastq.gz",
-                base / "genome.fasta",
-                base / "transcript.fa.gz",
-                base / "sequence.embl",
-            ]
-            for f in files:
-                f.touch()
-
-            samples = ena.extract_sample_names(files)
-
-            self.assertEqual(samples, ["genome", "reads", "sequence", "transcript"])
-
-    def test_group_files_by_sample_groups_paired_reads_together(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base = Path(tmpdir)
-            files = [
-                base / "sample1_R1.fastq.gz",
-                base / "sample1_R2.fastq.gz",
-                base / "sample2_R1.fastq.gz",
-                base / "sample2_R2.fastq.gz",
-            ]
-            for f in files:
-                f.touch()
-
-            groups = ena.group_files_by_sample(files)
-
-        self.assertEqual(list(groups.keys()), ["sample1", "sample2"])
-        self.assertEqual(len(groups["sample1"]), 2)
-        self.assertEqual(len(groups["sample2"]), 2)
-
-    def test_match_files_to_aliases_maps_files_to_matching_alias(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base = Path(tmpdir)
-            files = [
-                base / "sample1_R1.fastq.gz",
-                base / "sample1_R2.fastq.gz",
-                base / "sample2_R1.fastq.gz",
-            ]
-            for f in files:
-                f.touch()
-
-            result = ena.match_files_to_aliases(files, ["sample1", "sample2", "sample3"])
-
-        self.assertEqual(len(result["sample1"]), 2)
-        self.assertEqual(len(result["sample2"]), 1)
-        self.assertEqual(result["sample3"], [])
-
-    def test_match_files_to_aliases_is_case_insensitive(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base = Path(tmpdir)
-            files = [base / "Sample1_R1.fastq.gz"]
-            files[0].touch()
-
-            result = ena.match_files_to_aliases(files, ["sample1"])
-
-        self.assertEqual(len(result["sample1"]), 1)
 
     def test_valid_instruments_covers_all_platforms(self):
         for platform in ena.VALID_PLATFORMS:
@@ -956,20 +880,6 @@ class EnaTests(unittest.TestCase):
         self.assertIn("LIBRARY_SELECTION\tRANDOM", text)
         self.assertIn("LIBRARY_STRATEGY\tWGS", text)
         self.assertFalse(has_todos)
-
-    def test_extract_sample_names_deduplicates_paired_reads(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base = Path(tmpdir)
-            files = [
-                base / "mysample_forward.fastq.gz",
-                base / "mysample_reverse.fastq.gz",
-            ]
-            for f in files:
-                f.touch()
-
-            samples = ena.extract_sample_names(files)
-
-            self.assertEqual(samples, ["mysample"])
 
     def test_validation_catches_empty_mandatory_field_from_field_type_row(self):
         """#field_type row drives mandatory enforcement even when checklist has no fields."""
@@ -1044,6 +954,285 @@ class EnaTests(unittest.TestCase):
             # Verify each sample appears on its own line
             lines = [line for line in text.split("\n") if line.strip()]
             self.assertEqual(len(lines), 7)  # accession, headers, units, field_type, and 3 samples
+
+
+class SampleGroupingReviewTests(unittest.TestCase):
+    """The wizard must show the detected grouping and let the user correct it."""
+
+    def _console(self) -> tuple[Console, StringIO]:
+        buffer = StringIO()
+        return Console(file=buffer, width=140, force_terminal=False), buffer
+
+    @contextlib.contextmanager
+    def _dataset(self, names):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            files = []
+            for name in names:
+                path = root / name
+                path.touch()
+                files.append(path)
+            yield root, files
+
+    NOVOGENE = [
+        f"{alias}_EKDL240003470-1A_{flowcell}_{lane}_{mate}.fq.gz"
+        for alias in ("AC79", "AC80")
+        for flowcell, lane in (("223JWCLT4", "L2"), ("22JVFTLT3", "L1"))
+        for mate in ("1", "2")
+    ]
+
+    def test_accepting_keeps_the_detected_grouping(self):
+        console, buffer = self._console()
+        with self._dataset(self.NOVOGENE) as (root, files):
+            with mock.patch("mjolnirtools.ena.typer.prompt", side_effect=["accept"]):
+                grouping = ena._review_sample_grouping(console, files, root, root / "sample_files.tsv")
+
+        self.assertIsNotNone(grouping)
+        self.assertEqual(grouping.aliases, ["AC79", "AC80"])
+        self.assertEqual(len(grouping.runs), 4)
+        output = buffer.getvalue()
+        self.assertIn("8 data file(s)", output)
+        self.assertIn("4 run(s) in 2 sample(s)", output)
+        self.assertIn("AC79", output)
+
+    def test_aborting_returns_none(self):
+        console, _ = self._console()
+        with self._dataset(self.NOVOGENE) as (root, files):
+            with mock.patch("mjolnirtools.ena.typer.prompt", side_effect=["abort"]):
+                grouping = ena._review_sample_grouping(console, files, root, root / "sample_files.tsv")
+
+        self.assertIsNone(grouping)
+
+    def test_choosing_another_scheme_regroups_the_files(self):
+        console, _ = self._console()
+        with self._dataset(self.NOVOGENE) as (root, files):
+            options = ena.samples_module.scheme_options(ena.samples_module.detect_runs(files)[0])
+            choice = str(1 + [option.scheme for option in options].index("stem"))
+            with mock.patch("mjolnirtools.ena.typer.prompt", side_effect=["scheme", choice, "accept"]):
+                grouping = ena._review_sample_grouping(console, files, root, root / "sample_files.tsv")
+
+        self.assertEqual(len(grouping.samples), 4)
+        self.assertEqual(len(grouping.files), 8)
+
+    def test_custom_pattern_overrides_the_alias(self):
+        console, _ = self._console()
+        with self._dataset(self.NOVOGENE) as (root, files):
+            with mock.patch(
+                "mjolnirtools.ena.typer.prompt",
+                side_effect=["pattern", r"^(?P<sample>AC\d+)_EKDL(?P<batch>\d+)", "accept"],
+            ):
+                grouping = ena._review_sample_grouping(console, files, root, root / "sample_files.tsv")
+
+        self.assertEqual(grouping.aliases, ["AC79", "AC80"])
+
+    def test_editing_the_mapping_file_replaces_the_grouping(self):
+        console, _ = self._console()
+        with self._dataset(["a_R1.fq.gz", "a_R2.fq.gz"]) as (root, files):
+            mapping = root / "sample_files.tsv"
+
+            def _edit(_message):
+                mapping.write_text(
+                    "#sample_files\tv1\n"
+                    "sample_alias\trun_name\tread\tfile\n"
+                    "Renamed\trun-42\t1\ta_R1.fq.gz\n"
+                    "Renamed\trun-42\t2\ta_R2.fq.gz\n"
+                )
+
+            with mock.patch("mjolnirtools.ena.click.pause", side_effect=_edit):
+                with mock.patch("mjolnirtools.ena.typer.prompt", side_effect=["edit", "accept"]):
+                    grouping = ena._review_sample_grouping(console, files, root, mapping)
+
+        self.assertEqual(grouping.aliases, ["Renamed"])
+        self.assertEqual(grouping.runs[0].run_name, "run-42")
+
+    def test_a_broken_edit_keeps_the_previous_grouping(self):
+        console, buffer = self._console()
+        with self._dataset(["a_R1.fq.gz", "a_R2.fq.gz"]) as (root, files):
+            mapping = root / "sample_files.tsv"
+
+            def _edit(_message):
+                mapping.write_text("this is not a mapping file\n")
+
+            with mock.patch("mjolnirtools.ena.click.pause", side_effect=_edit):
+                with mock.patch("mjolnirtools.ena.typer.prompt", side_effect=["edit", "accept"]):
+                    grouping = ena._review_sample_grouping(console, files, root, mapping)
+
+        self.assertEqual(grouping.aliases, ["a"])
+        self.assertIn("Keeping the previous grouping", buffer.getvalue())
+        self.assertNotIn("Traceback", buffer.getvalue())
+
+    def test_grouping_warnings_are_shown(self):
+        console, buffer = self._console()
+        with self._dataset(["a_R1.fq.gz", "a_R2.fq.gz", "b_R1.fq.gz"]) as (root, files):
+            with mock.patch("mjolnirtools.ena.typer.prompt", side_effect=["accept"]):
+                ena._review_sample_grouping(console, files, root, root / "sample_files.tsv")
+
+        self.assertIn("Warning:", buffer.getvalue())
+        self.assertIn("no mate", buffer.getvalue())
+
+    def test_discover_data_files_ignores_non_sequence_files(self):
+        with self._dataset(["notes.txt", "checksums.md5"]) as (root, _files):
+            self.assertEqual(ena.discover_data_files(root, "reads"), [])
+
+    def test_manifest_uses_the_run_name_and_the_sample_alias(self):
+        with self._dataset(["AC79_L1_1.fq.gz", "AC79_L1_2.fq.gz"]) as (root, files):
+            manifest = root / "reads_AC79_L1.manifest.txt"
+            ena.write_manifest_template(
+                "reads", root, files, "PRJEB1", "AC79", manifest, run_name="AC79_L1"
+            )
+            text = manifest.read_text()
+
+        self.assertIn("SAMPLE\tAC79", text)
+        self.assertIn("NAME\tAC79_L1", text)
+        self.assertEqual(text.count("FASTQ\t"), 2)
+
+    def test_reads_manifest_rejects_more_than_one_read_pair(self):
+        with self._dataset(["a_1.fq.gz", "a_2.fq.gz", "b_1.fq.gz", "b_2.fq.gz"]) as (root, files):
+            with self.assertRaises(ena.errors_module.UserError) as caught:
+                ena.write_manifest_template(
+                    "reads", root, files, "PRJEB1", "a", root / "m.txt", run_name="a"
+                )
+
+        self.assertIn("4 read files", caught.exception.message)
+
+    def test_full_multi_lane_dataset_yields_one_row_per_sample_and_one_manifest_per_run(self):
+        """Regression for the 460-file dataset that produced 377 bogus samples."""
+        names = [
+            f"AC{index}_EKDL240003470-1A_{flowcell}_{lane}_{mate}.fq.gz"
+            for index in range(79, 79 + 115)
+            for flowcell, lane in (("223JWCLT4", "L2"), ("22JVFTLT3", "L1"))
+            for mate in ("1", "2")
+        ]
+        console, _ = self._console()
+        with self._dataset(names) as (root, _created):
+            data_files = ena.discover_data_files(root, "reads")
+            self.assertEqual(len(data_files), 460)
+
+            with mock.patch("mjolnirtools.ena.typer.prompt", side_effect=["accept"]):
+                grouping = ena._review_sample_grouping(console, data_files, root, root / "sample_files.tsv")
+
+            self.assertEqual(len(grouping.samples), 115)
+            self.assertEqual(len(grouping.runs), 230)
+            self.assertEqual(len(grouping.files), 460)
+
+            workspace = root / "workspace"
+            ena.samples_module.write_sample_mapping_tsv(workspace / "sample_files.tsv", grouping, root)
+            metadata = workspace / "samples.tsv"
+            checklist = ena.parse_checklist_xml(CHECKLIST_XML)
+            ena.write_metadata_template(checklist, metadata, sample_names=grouping.aliases)
+            data_rows = [
+                line
+                for line in metadata.read_text().splitlines()
+                if line.strip() and not line.startswith(("#", "sample_alias"))
+            ]
+            self.assertEqual(len(data_rows), 115)
+
+            matched, unclaimed = ena.samples_module.reconcile_aliases(grouping, grouping.aliases)
+            self.assertEqual(unclaimed, [])
+
+            fastq_counts = []
+            for alias, runs in matched.items():
+                for run in runs:
+                    manifest = workspace / f"reads_{run.run_name}.manifest.txt"
+                    ena.write_manifest_template(
+                        "reads", root, list(run.files), "PRJEB1", alias, manifest, run_name=run.run_name
+                    )
+                    text = manifest.read_text()
+                    self.assertIn(f"SAMPLE\t{alias}", text)
+                    self.assertIn(f"NAME\t{run.run_name}", text)
+                    fastq_counts.append(text.count("FASTQ\t"))
+
+            self.assertEqual(len(fastq_counts), 230)
+            self.assertEqual(set(fastq_counts), {2})
+            self.assertEqual(len(list(workspace.glob("reads_*.manifest.txt"))), 230)
+
+
+class TransferWizardErrorHandlingTests(unittest.TestCase):
+    def _console(self) -> tuple[Console, StringIO]:
+        buffer = StringIO()
+        return Console(file=buffer, width=100, force_terminal=False), buffer
+
+    def test_workspace_prompt_accepts_a_writable_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, _ = self._console()
+            default = Path(tmpdir) / "mt-ena-run"
+            with mock.patch("mjolnirtools.ena.typer.prompt", return_value=str(default)):
+                workspace = ena._prompt_workspace_directory(console, default)
+
+            self.assertEqual(workspace, default.resolve())
+            self.assertTrue(default.is_dir())
+
+    def test_workspace_prompt_reprompts_after_permission_error(self):
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses directory permissions")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            locked = Path(tmpdir) / "locked"
+            locked.mkdir(mode=0o500)
+            writable = Path(tmpdir) / "workspace"
+            console, buffer = self._console()
+            try:
+                with mock.patch(
+                    "mjolnirtools.ena.typer.prompt",
+                    side_effect=[str(locked / "run"), str(writable)],
+                ):
+                    workspace = ena._prompt_workspace_directory(console, locked / "run")
+            finally:
+                locked.chmod(0o700)
+
+            self.assertEqual(workspace, writable.resolve())
+            output = buffer.getvalue()
+            self.assertIn("Permission denied", output)
+            self.assertNotIn("Traceback", output)
+
+    def test_workspace_prompt_gives_up_after_repeated_failures(self):
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses directory permissions")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            locked = Path(tmpdir) / "locked"
+            locked.mkdir(mode=0o500)
+            console, buffer = self._console()
+            try:
+                with mock.patch(
+                    "mjolnirtools.ena.typer.prompt", return_value=str(locked / "run")
+                ):
+                    workspace = ena._prompt_workspace_directory(console, locked / "run")
+            finally:
+                locked.chmod(0o700)
+
+            self.assertIsNone(workspace)
+            self.assertIn("Could not set up a workspace directory", buffer.getvalue())
+
+    def test_wizard_converts_filesystem_errors_into_messages(self):
+        buffer = StringIO()
+        error = PermissionError(13, "Permission denied", "/maps/projects/demo/run")
+        with mock.patch("mjolnirtools.ena._run_transfer_wizard", side_effect=error):
+            with contextlib.redirect_stdout(buffer):
+                exit_code = ena.run_transfer_wizard(None, True)
+
+        self.assertEqual(exit_code, 1)
+        output = buffer.getvalue()
+        self.assertIn("Permission denied", output)
+        self.assertIn("/maps/projects/demo/run", output)
+        self.assertNotIn("Traceback", output)
+
+    def test_wizard_reports_cancellation(self):
+        buffer = StringIO()
+        with mock.patch("mjolnirtools.ena._run_transfer_wizard", side_effect=KeyboardInterrupt):
+            with contextlib.redirect_stdout(buffer):
+                exit_code = ena.run_transfer_wizard(None, True)
+
+        self.assertEqual(exit_code, 130)
+        self.assertIn("cancelled", buffer.getvalue().lower())
+
+    def test_wizard_rejects_unreadable_source(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing = Path(tmpdir) / "missing"
+            console, buffer = self._console()
+
+            exit_code = ena._run_transfer_wizard(console, str(missing), True)
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("Path not found", buffer.getvalue())
 
 
 if __name__ == "__main__":

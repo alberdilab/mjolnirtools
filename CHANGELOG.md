@@ -2,6 +2,64 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.2.1 - 2026-08-13
+
+### Fixed
+
+- `mt transfer ena` no longer invents samples from paired-read file names. Read
+  markers were matched anywhere in the name and cut at the first hit, so
+  `AC79_EKDL240003470-1A_223JWCLT4_L2_2.fq.gz` was split at the `_2` inside the
+  flowcell id while its mate was split at the trailing `_1`, and 460 files from
+  115 samples were reported as 377 samples. Markers are now matched only at the
+  end of the name and cross-checked against the whole file set, so a marker is
+  only believed when the resulting pair actually exists.
+- Samples sequenced across several lanes or flowcells now produce one manifest
+  per read pair. Webin-CLI treats a manifest as a single run and accepts at most
+  one pair, so the previous single manifest listing all four files of a two-lane
+  sample was rejected. `SAMPLE` stays the sample alias while `NAME` carries the
+  unique run name.
+- A source directory containing no recognised sequence files now stops the
+  wizard with a message naming the expected extensions, instead of falling back
+  to treating every file — READMEs, checksums — as submittable data.
+- Filesystem and OS failures are now reported as a short, actionable message
+  instead of a Python traceback. The trigger was `mt transfer ena`, where
+  accepting the default workspace directory inside a location the user cannot
+  write to (for example a shared `data/` directory) crashed with a rich
+  traceback ending in `PermissionError: [Errno 13] Permission denied`.
+- The transfer wizard now re-prompts for the workspace directory when it cannot
+  be created, explaining why and suggesting a writable alternative under the
+  user's home directory, rather than aborting the whole wizard. The directory is
+  verified by writing a probe file, so problems that only surface on first write
+  (group ACLs, read-only mounts, exhausted quota) are caught at the prompt
+  instead of several steps later.
+- Every later step of the wizard (metadata template, ENA XMLs, manifests, logs,
+  submission scripts, Webin-CLI cache and download) reports filesystem problems
+  the same way, and `Ctrl-C` exits with a plain "Wizard cancelled" message.
+
+### Added
+
+- `mt transfer ena` now shows the detected sample/run/file assignment and asks
+  for confirmation before the metadata template is created. From the prompt you
+  can accept it, pick a different rule for splitting file names (each listed
+  with its sample count and an example alias), supply your own regular
+  expression, hand-edit the assignment as a TSV, or stop.
+- The confirmed assignment is written to `sample_files.tsv` in the workspace and
+  drives manifest generation, so renaming a sample alias in the metadata TSV no
+  longer silently detaches its files. Warnings are raised for unpaired read
+  files, uneven file counts, aliases that differ only in capitalisation, and
+  discovered files left out of the mapping.
+- New `mjolnirtools.samples` module holding the read-mate, run and sample
+  detection logic, including the `sample_files.tsv` reader and writer.
+- New `mjolnirtools.errors` module translating `OSError` into user-facing
+  messages with hints, covering permission denied, read-only filesystems, full
+  disks, exhausted quotas, missing or non-directory parents, over-long names,
+  symlink loops, open-file limits, unresponsive network mounts, and network or
+  HTTP failures from `urllib`.
+- A top-level safety net in the `mt` entry point applies the same treatment to
+  all commands, so unexpected failures print one line rather than a traceback.
+  Genuine bugs print a short message pointing at `MT_TRACEBACK=1` for the full
+  traceback and at the issue tracker.
+
 ## 1.2.0 - 2026-06-19
 
 ### Added

@@ -30,6 +30,8 @@ from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, Te
 from rich.table import Table
 
 from mjolnirtools import config as config_module
+from mjolnirtools import errors as errors_module
+from mjolnirtools import samples as samples_module
 from mjolnirtools import shell
 
 
@@ -504,69 +506,6 @@ def _print_upload_instructions(console: Console, scp_command: str, remote_path: 
         border_style="blue",
         padding=(0, 1),
     ))
-
-
-_SEQUENCE_EXTENSIONS = (
-    ".fastq.gz", ".fasta.gz", ".fna.gz", ".fa.gz",
-    ".fastq", ".fasta", ".fna", ".fa",
-    ".fq.gz", ".fq",
-    ".bam", ".cram", ".embl", ".dat",
-)
-_PAIRED_PATTERNS = (
-    "_r1", "_r2",
-    "_1", "_2",
-    "_f", "_r",
-    "_forward", "_reverse",
-)
-
-
-def _extract_single_sample_name(file_path: Path) -> str:
-    """Extract the sample name from a single data file path."""
-    name = file_path.name.lower()
-    for ext in _SEQUENCE_EXTENSIONS:
-        if name.endswith(ext):
-            name = name[:-len(ext)]
-            break
-    for pattern in _PAIRED_PATTERNS:
-        if pattern in name:
-            name = name.split(pattern)[0]
-            break
-    return name
-
-
-def extract_sample_names(data_files: list[Path]) -> list[str]:
-    """Extract unique sample names from data file names."""
-    return sorted({_extract_single_sample_name(f) for f in data_files})
-
-
-def group_files_by_sample(data_files: list[Path]) -> dict[str, list[Path]]:
-    """Group data files by detected sample name, sorted alphabetically by sample."""
-    groups: dict[str, list[Path]] = {}
-    for file_path in data_files:
-        sample = _extract_single_sample_name(file_path)
-        groups.setdefault(sample, []).append(file_path)
-    return dict(sorted(groups.items()))
-
-
-def match_files_to_aliases(
-    data_files: list[Path],
-    sample_aliases: list[str],
-) -> dict[str, list[Path]]:
-    """Match data files to TSV sample aliases by detected sample name.
-
-    Returns a dict mapping each alias to its matched files. Aliases with no
-    matching files map to an empty list. Comparison is case-insensitive.
-    """
-    file_groups = group_files_by_sample(data_files)
-    result: dict[str, list[Path]] = {}
-    for alias in sample_aliases:
-        alias_lower = alias.lower()
-        matched: list[Path] = []
-        for detected_name, files in file_groups.items():
-            if detected_name == alias_lower:
-                matched.extend(files)
-        result[alias] = matched
-    return result
 
 
 def write_metadata_template(
@@ -1059,24 +998,31 @@ def _add_sample_attribute(
         units.text = units_text
 
 
-def discover_data_files(source: Path, context: str) -> list[Path]:
-    """Return files from source that should be referenced by a Webin-CLI manifest."""
-    if source.is_file():
-        return [source]
-    suffixes = {
+def data_file_suffixes(context: str) -> tuple[str, ...]:
+    """Return the file extensions that count as data files for a submission context."""
+    return {
         "reads": (".fastq", ".fastq.gz", ".fq", ".fq.gz", ".bam", ".cram"),
         "genome": (".fasta", ".fasta.gz", ".fa", ".fa.gz", ".fna", ".fna.gz"),
         "transcriptome": (".fasta", ".fasta.gz", ".fa", ".fa.gz", ".fna", ".fna.gz"),
         "sequence": (".fasta", ".fasta.gz", ".fa", ".fa.gz", ".embl", ".dat"),
     }[context]
-    files = [
+
+
+def discover_data_files(source: Path, context: str) -> list[Path]:
+    """Return files from source that should be referenced by a Webin-CLI manifest.
+
+    Only files with a recognised extension are returned; a directory holding no
+    such file yields an empty list rather than every file it contains, so notes
+    and checksums never end up registered as samples.
+    """
+    if source.is_file():
+        return [source]
+    suffixes = data_file_suffixes(context)
+    return [
         path
         for path in sorted(source.rglob("*"))
         if path.is_file() and _matches_suffix(path.name.lower(), suffixes)
     ]
-    if files:
-        return files
-    return [path for path in sorted(source.rglob("*")) if path.is_file()]
 
 
 def auto_discover_source(start_path: Path | None = None) -> Path | None:
@@ -1122,15 +1068,28 @@ def write_manifest_template(
     sample_alias: str,
     path: Path,
     library: ReadsLibraryMetadata | None = None,
+    run_name: str | None = None,
 ) -> None:
-    """Write a Webin-CLI manifest template for the selected data files."""
+    """Write a Webin-CLI manifest template for the selected data files.
+
+    One manifest describes one run, so ``run_name`` becomes the manifest NAME and
+    must be unique across the submission; it defaults to the sample alias.
+    """
     input_dir = source.parent if source.is_file() else source
     relative_files = [
         file.relative_to(input_dir).as_posix() if file.is_relative_to(input_dir) else file.name
         for file in data_files
     ]
+    if context == "reads" and len(relative_files) > 2:
+        raise errors_module.UserError(
+            f"Run '{run_name or sample_alias}' has {len(relative_files)} read files.",
+            [
+                "A run may contain one file, or two for paired reads.",
+                "Split the extra files into their own runs in sample_files.tsv.",
+            ],
+        )
 
-    lines = _manifest_header(context, source, study, sample_alias, library=library)
+    lines = _manifest_header(context, source, study, sample_alias, library=library, run_name=run_name)
     if context == "reads":
         for file_name in relative_files:
             lower = file_name.lower()
@@ -1171,6 +1130,7 @@ def _manifest_header(
     study: str,
     sample_alias: str,
     library: ReadsLibraryMetadata | None = None,
+    run_name: str | None = None,
 ) -> list[str]:
     name = source.stem if source.is_file() else source.name
     if context == "reads":
@@ -1178,7 +1138,7 @@ def _manifest_header(
         return [
             f"STUDY\t{study}",
             f"SAMPLE\t{sample_alias}",
-            f"NAME\t{sample_alias}",
+            f"NAME\t{run_name or sample_alias}",
             f"PLATFORM\t{lib.platform if lib else 'TODO'}",
             f"INSTRUMENT\t{lib.instrument if lib else 'TODO'}",
             f"LIBRARY_NAME\t{lib.library_name if lib else 'TODO'}",
@@ -1341,54 +1301,229 @@ def build_submission_runner_command(
 
 
 def _guess_pairing(files: list[Path]) -> str:
-    """Guess if files are paired or single based on naming patterns."""
+    """Report whether the files form read pairs, using detected run structure."""
     if not files:
         return "single"
+    return samples_module.build_grouping(files).pairing
 
-    paired_indicators = {"_r1", "_r2", "_1.", "_2.", "_f.", "_r.", "_forward", "_reverse"}
-    names_lower = {f.name.lower() for f in files}
 
-    has_paired = any(indicator in name for name in names_lower for indicator in paired_indicators)
-    if has_paired:
-        return "paired"
-
-    return "single"
+def _pairing_label(grouping: samples_module.Grouping) -> str:
+    """Return a pairing description that names both halves of a mixed set."""
+    pairing = grouping.pairing
+    if pairing != "mixed":
+        return pairing
+    paired = sum(1 for run in grouping.runs if run.pairing == "paired")
+    single = sum(1 for run in grouping.runs if run.pairing == "single")
+    return f"{paired} paired + {single} single"
 
 
 def _report_file_detection(
     console: Console,
     files: list[Path],
     max_show: int = 3,
-    sample_names: list[str] | None = None,
+    grouping: samples_module.Grouping | None = None,
 ) -> None:
-    """Report detected files with count, pairing guess, and inferred sample names."""
+    """Report detected files with count, pairing, and the samples they resolve to."""
     if not files:
         return
 
-    file_count = len(files)
-    pairing = _guess_pairing(files)
+    if grouping is None:
+        grouping = samples_module.build_grouping(files)
 
+    file_count = len(files)
     file_names = [f.name for f in files[:max_show]]
     files_text = ", ".join(f"[cyan]{name}[/cyan]" for name in file_names)
     if file_count > max_show:
         files_text += f", ... ([yellow]+{file_count - max_show} more[/yellow])"
 
     console.print()
-    console.print(f"  [green]Detected {file_count} data file(s)[/green] ([bold]{pairing}[/bold]): {files_text}")
+    console.print(
+        f"  [green]Detected {file_count} data file(s)[/green] "
+        f"([bold]{_pairing_label(grouping)}[/bold]): {files_text}"
+    )
 
-    if sample_names:
-        sample_count = len(sample_names)
-        shown = sample_names[:max_show]
+    aliases = grouping.aliases
+    if aliases:
+        shown = aliases[:max_show]
         samples_text = ", ".join(f"[cyan]{name}[/cyan]" for name in shown)
-        if sample_count > max_show:
-            samples_text += f", ... ([yellow]+{sample_count - max_show} more[/yellow])"
-        console.print(f"  [green]Detected {sample_count} sample(s)[/green]: {samples_text}")
+        if len(aliases) > max_show:
+            samples_text += f", ... ([yellow]+{len(aliases) - max_show} more[/yellow])"
+        console.print(
+            f"  [green]Detected {len(grouping.runs)} run(s) in {len(aliases)} sample(s)[/green]: {samples_text}"
+        )
+
+
+def _print_sample_grouping(console: Console, grouping: samples_module.Grouping, max_rows: int = 10) -> None:
+    """Show how files were assigned to samples and runs, with any warnings."""
+    table = Table(title=f"Sample grouping — {grouping.label}")
+    table.add_column("#", style="dim", justify="right")
+    table.add_column("Sample alias", style="cyan", no_wrap=True)
+    table.add_column("Runs", justify="right")
+    table.add_column("Files", justify="right")
+    table.add_column("First run", style="white")
+    for index, sample in enumerate(grouping.samples[:max_rows], start=1):
+        first_run = sample.runs[0]
+        table.add_row(
+            str(index),
+            sample.alias,
+            str(len(sample.runs)),
+            str(sample.file_count),
+            "\n".join(path.name for path in first_run.files),
+        )
+    console.print()
+    console.print(table)
+    if len(grouping.samples) > max_rows:
+        console.print(f"  [dim]... and {len(grouping.samples) - max_rows} more sample(s)[/dim]")
+
+    counts = [sample.file_count for sample in grouping.samples]
+    console.print(
+        f"  [bold]{len(grouping.samples)}[/bold] sample(s), [bold]{len(grouping.runs)}[/bold] run(s), "
+        f"[bold]{len(grouping.files)}[/bold] file(s); {min(counts)}-{max(counts)} file(s) per sample."
+    )
+    for warning in grouping.warnings:
+        console.print(f"  [yellow]Warning:[/yellow] {warning}")
+
+
+def _choose_grouping_scheme(console: Console, grouping: samples_module.Grouping) -> samples_module.Grouping:
+    """Let the user pick a different rule for splitting file names into samples."""
+    options = samples_module.scheme_options(grouping.runs)
+    table = Table(title="Sample grouping schemes")
+    table.add_column("#", style="dim", justify="right")
+    table.add_column("Rule", style="cyan")
+    table.add_column("Samples", justify="right")
+    table.add_column("Files/sample", justify="right")
+    table.add_column("Example alias", style="white")
+    for index, option in enumerate(options, start=1):
+        span = (
+            str(option.min_files)
+            if option.min_files == option.max_files
+            else f"{option.min_files}-{option.max_files}"
+        )
+        table.add_row(str(index), option.label, str(option.sample_count), span, option.example_alias)
+    console.print()
+    console.print(table)
+
+    while True:
+        raw = typer.prompt("  Scheme number", default="1").strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return samples_module.regroup(grouping, options[int(raw) - 1].scheme)
+        console.print(f"  Enter a number between 1 and {len(options)}.")
+
+
+def _prompt_grouping_pattern(console: Console, grouping: samples_module.Grouping) -> samples_module.Grouping:
+    """Let the user supply a regular expression that extracts the sample alias."""
+    example_run = grouping.runs[0].run_name if grouping.runs else "sample_lane1"
+    _print_prompt_help(
+        console,
+        "Custom sample pattern",
+        "Enter a regular expression matched against the run name — the file name without "
+        "its extension and read marker. The text captured by a group named [bold]sample[/bold] "
+        "becomes the sample alias; without one, the first capture group or the whole match is "
+        "used, and run names that do not match keep their full name.\n"
+        f"  Example run name: [cyan]{example_run}[/cyan]\n"
+        r"  Example pattern:  [cyan]^(?P<sample>[^_]+)[/cyan]",
+    )
+    while True:
+        pattern = typer.prompt("  Pattern", default="^(?P<sample>[^_]+)").strip()
+        try:
+            return samples_module.regroup(grouping, f"regex:{pattern}")
+        except errors_module.UserError as exc:
+            errors_module.print_user_error(console, exc, indent="  ")
+
+
+def _edit_sample_mapping(
+    console: Console,
+    grouping: samples_module.Grouping,
+    data_files: list[Path],
+    source: Path,
+    mapping_path: Path,
+) -> samples_module.Grouping:
+    """Write the mapping out, wait for the user to edit it, and read it back."""
+    samples_module.write_sample_mapping_tsv(mapping_path, grouping, source)
+    console.print(f"\n  [green]Sample mapping written:[/green] {mapping_path}")
+    _print_prompt_help(
+        console,
+        "Edit the sample mapping",
+        "Each row assigns one data file to a sample and a run. Change the "
+        "[bold]sample_alias[/bold] and [bold]run_name[/bold] columns freely; every run may hold "
+        "one file, or two rows with read 1 and read 2. Delete a row to leave that file out of "
+        "the submission. Edit it in place on this machine, or copy it to your computer:\n"
+        f"  Download:  [cyan]{generate_scp_download_command(mapping_path)}[/cyan]\n"
+        f"  Upload:    [cyan]{generate_scp_upload_command(Path(mapping_path.name), mapping_path)}[/cyan]",
+        show_prompt_tip=False,
+    )
+    click.pause("  Edit the mapping, then press Enter to reload it...")
+    try:
+        return samples_module.read_sample_mapping_tsv(mapping_path, data_files, source)
+    except errors_module.UserError as exc:
+        errors_module.print_user_error(console, exc, indent="  ")
+        console.print("  [yellow]Keeping the previous grouping.[/yellow]")
+        return grouping
+
+
+def _review_sample_grouping(
+    console: Console,
+    data_files: list[Path],
+    source: Path,
+    mapping_path: Path,
+) -> samples_module.Grouping | None:
+    """Show the detected grouping and let the user correct it before anything is written.
+
+    Returns the confirmed grouping, or None if the user chose to stop.
+    """
+    grouping = samples_module.build_grouping(data_files)
+    while True:
+        _report_file_detection(console, data_files, grouping=grouping)
+        _print_sample_grouping(console, grouping)
+        _print_prompt_help(
+            console,
+            "Confirm sample grouping",
+            "Sample names are guessed from the file names, so check the table above before the "
+            "metadata template is created — one row per sample will be written from it.\n"
+            "  [bold]accept[/bold]   use this grouping\n"
+            "  [bold]scheme[/bold]   pick a different rule for splitting file names\n"
+            "  [bold]pattern[/bold]  supply your own regular expression\n"
+            "  [bold]edit[/bold]     hand-edit the sample/run/file assignment in a TSV\n"
+            "  [bold]abort[/bold]    stop the wizard",
+            show_prompt_tip=False,
+        )
+        choice = _prompt_choice(
+            "  Sample grouping",
+            ("accept", "scheme", "pattern", "edit", "abort"),
+            "accept",
+        )
+        if choice == "accept":
+            return grouping
+        if choice == "abort":
+            return None
+        if choice == "scheme":
+            grouping = _choose_grouping_scheme(console, grouping)
+        elif choice == "pattern":
+            grouping = _prompt_grouping_pattern(console, grouping)
+        else:
+            grouping = _edit_sample_mapping(console, grouping, data_files, source, mapping_path)
 
 
 def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
-    """Run the interactive ENA submission wizard."""
+    """Run the ENA submission wizard, reporting filesystem problems as plain messages."""
     console = Console()
+    try:
+        return _run_transfer_wizard(console, source, keep_original)
+    except errors_module.UserError as exc:
+        console.print()
+        errors_module.print_user_error(console, exc)
+        return 1
+    except OSError as exc:
+        console.print()
+        errors_module.print_user_error(console, errors_module.describe_os_error(exc))
+        return 1
+    except (KeyboardInterrupt, click.Abort):
+        console.print("\n  Wizard cancelled.")
+        return 130
 
+
+def _run_transfer_wizard(console: Console, source: str | None, keep_original: bool) -> int:
+    """Run the interactive ENA submission wizard."""
     # Auto-discover source if not provided
     if source is None:
         source_path = auto_discover_source()
@@ -1402,11 +1537,12 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
             return 1
         console.print(f"  [green]Auto-discovered data directory:[/green] {source_path}")
     else:
-        source_path = Path(source).expanduser().resolve()
-
-    if not source_path.exists():
-        console.print(f"[bold red]Error:[/bold red] Source not found: {source_path}")
-        return 1
+        try:
+            source_path = errors_module.expand_path(source, action="read")
+            errors_module.ensure_readable_path(source_path, action="read")
+        except errors_module.UserError as exc:
+            errors_module.print_user_error(console, exc)
+            return 1
 
     console.print()
     console.print(Panel(
@@ -1456,10 +1592,9 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
         "output. The source data stays where it is unless you use --delete and the "
         "submission succeeds.",
     )
-    workspace = Path(
-        typer.prompt("  Workspace directory", default=str(default_workspace))
-    ).expanduser().resolve()
-    workspace.mkdir(parents=True, exist_ok=True)
+    workspace = _prompt_workspace_directory(console, default_workspace)
+    if workspace is None:
+        return 1
 
     _print_submission_context_help(console)
     context = _prompt_choice("  Submission type", VALID_CONTEXTS, default="reads")
@@ -1496,6 +1631,22 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
             return 1
         template_study = production_study
 
+    data_files = discover_data_files(source_path, context)
+    if not data_files:
+        raise errors_module.UserError(
+            f"No {context} data files were found under {source_path}.",
+            [
+                f"Expected files ending in: {', '.join(data_file_suffixes(context))}",
+                "Point the wizard at the directory holding the sequence files:  mt transfer ena <path>",
+            ],
+        )
+    grouping = _review_sample_grouping(console, data_files, source_path, workspace / "sample_files.tsv")
+    if grouping is None:
+        console.print("  [yellow]Cancelled.[/yellow]")
+        return 130
+    samples_module.write_sample_mapping_tsv(workspace / "sample_files.tsv", grouping, source_path)
+    console.print(f"  [green]Sample mapping written:[/green] {workspace / 'sample_files.tsv'}")
+
     checklist = _select_checklist(console)
     _print_prompt_help(
         console,
@@ -1509,13 +1660,13 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
         default=False,
     )
 
-    # Extract sample names from discovered data files
-    data_files = discover_data_files(source_path, context)
-    sample_names = extract_sample_names(data_files) if data_files else None
-    _report_file_detection(console, data_files, sample_names=sample_names)
-
     metadata_template = workspace / f"samples_{checklist.accession}.tsv"
-    write_metadata_template(checklist, metadata_template, include_optional=include_optional, sample_names=sample_names)
+    write_metadata_template(
+        checklist,
+        metadata_template,
+        include_optional=include_optional,
+        sample_names=grouping.aliases,
+    )
     console.print(f"  [green]Metadata template written:[/green] {metadata_template}")
 
     scp_download_command = generate_scp_download_command(metadata_template)
@@ -1582,48 +1733,69 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
         library = _prompt_reads_library_metadata(console, sample_count=len(samples))
 
     sample_aliases = [s["sample_alias"] for s in samples]
-    alias_to_files = match_files_to_aliases(data_files, sample_aliases)
+    alias_to_runs, unclaimed = samples_module.reconcile_aliases(grouping, sample_aliases)
 
-    manifests: list[tuple[str, Path]] = []
-    for alias, alias_files in alias_to_files.items():
-        if not alias_files:
+    # Reads are submitted one run at a time: Webin-CLI treats a manifest as a
+    # single run and accepts at most one read pair. Assembly contexts keep all
+    # of a sample's files in one manifest.
+    submission_units: list[tuple[str, samples_module.RunGroup]] = []
+    for alias, runs in alias_to_runs.items():
+        if not runs:
             console.print(f"  [yellow]Warning:[/yellow] No data files matched alias '{alias}' — skipping manifest.")
             continue
-        manifest_path = workspace / f"{context}_{alias}.manifest.txt"
-        write_manifest_template(context, source_path, alias_files, template_study, alias, manifest_path, library=library)
-        manifests.append((alias, manifest_path))
-        console.print(f"  [green]Manifest written:[/green] {manifest_path} ({len(alias_files)} file(s))")
+        if context == "reads":
+            submission_units.extend((alias, run) for run in runs)
+        else:
+            files = tuple(path for run in runs for path in run.files)
+            submission_units.append((alias, samples_module.RunGroup(alias, files, "single")))
 
-    all_matched = {f for fs in alias_to_files.values() for f in fs}
-    unmatched = [f for f in data_files if f not in all_matched]
-    if unmatched:
-        console.print(f"  [yellow]Warning:[/yellow] {len(unmatched)} file(s) could not be matched to any sample alias:")
-        for f in unmatched[:5]:
-            console.print(f"    {f.name}")
-        if len(unmatched) > 5:
-            console.print(f"    ... and {len(unmatched) - 5} more")
+    manifests: list[tuple[str, samples_module.RunGroup, Path]] = []
+    for alias, run in submission_units:
+        manifest_path = workspace / f"{context}_{run.run_name}.manifest.txt"
+        write_manifest_template(
+            context,
+            source_path,
+            list(run.files),
+            template_study,
+            alias,
+            manifest_path,
+            library=library,
+            run_name=run.run_name,
+        )
+        manifests.append((alias, run, manifest_path))
+        console.print(f"  [green]Manifest written:[/green] {manifest_path} ({run.file_count} file(s))")
+
+    if unclaimed:
+        console.print(
+            f"  [yellow]Warning:[/yellow] {len(unclaimed)} detected sample(s) have no row in the "
+            f"metadata TSV and will not be submitted: {', '.join(unclaimed[:5])}"
+            + (f", ... and {len(unclaimed) - 5} more" if len(unclaimed) > 5 else "")
+        )
 
     if not manifests:
         console.print("[bold red]Error:[/bold red] No manifests were generated.")
         return 1
 
     if context == "reads":
-        preview_table = Table(title="Sample–file assignment (first 5)", show_lines=True)
+        preview_table = Table(title="Sample–run–file assignment (first 5)", show_lines=True)
         preview_table.add_column("Sample alias", style="cyan", no_wrap=True)
+        preview_table.add_column("Run", style="magenta", no_wrap=True)
         preview_table.add_column("File(s)", style="white")
-        for alias in list(alias_to_files.keys())[:5]:
-            files = alias_to_files[alias]
-            preview_table.add_row(alias, "\n".join(f.name for f in files) if files else "[yellow]none[/yellow]")
+        for alias, run, _manifest in manifests[:5]:
+            preview_table.add_row(alias, run.run_name, "\n".join(f.name for f in run.files))
         console.print()
         console.print(preview_table)
-        console.print("  Verify that the files above are assigned to the correct sample.")
+        console.print(
+            f"  {len(manifests)} run(s) across {len(sample_aliases)} sample(s). "
+            "Verify that the files above are assigned to the correct sample."
+        )
     else:
         console.print(
             "\n  Review the manifests above. Replace every TODO with the "
             "submission metadata required for the selected ENA context."
         )
     click.pause("  Review the manifests, then press Enter to continue...")
-    if any(manifest_has_todos(m) for _, m in manifests):
+    if any(manifest_has_todos(m) for _alias, _run, m in manifests):
         console.print("[bold red]Error:[/bold red] One or more manifests still contain TODO values.")
         return 1
 
@@ -1665,8 +1837,7 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
             jar=webin_cli_jar,
             credentials=credentials,
             context=context,
-            sample_manifests=manifests,
-            alias_to_files=alias_to_files,
+            run_manifests=manifests,
             input_dir=input_dir,
             output_dir=workspace / "webin-cli-output-test",
             test_service=True,
@@ -1697,15 +1868,15 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
             return 1
 
         # Generate production manifests now that we have the study accession
-        production_manifests: list[tuple[str, Path]] = []
-        for alias, m in manifests:
+        production_manifests: list[tuple[str, samples_module.RunGroup, Path]] = []
+        for alias, run, m in manifests:
             pm = workspace / f"{m.stem}.production.manifest.txt"
             try:
                 write_manifest_for_study(m, pm, production_study)
             except ValueError as exc:
                 console.print(f"[bold red]Error:[/bold red] {exc}")
                 return 1
-            production_manifests.append((alias, pm))
+            production_manifests.append((alias, run, pm))
         console.print(f"  [green]{len(production_manifests)} production manifest(s) written.[/green]")
 
         # Submit sample metadata to production
@@ -1734,8 +1905,7 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
             jar=webin_cli_jar,
             credentials=credentials,
             context=context,
-            sample_manifests=production_manifests,
-            alias_to_files=alias_to_files,
+            run_manifests=production_manifests,
             input_dir=input_dir,
             output_dir=workspace / "webin-cli-output-production",
             test_service=False,
@@ -1777,8 +1947,7 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
             jar=webin_cli_jar,
             credentials=credentials,
             context=context,
-            sample_manifests=manifests,
-            alias_to_files=alias_to_files,
+            run_manifests=manifests,
             input_dir=input_dir,
             output_dir=workspace / "webin-cli-output",
             test_service=False,
@@ -1794,6 +1963,42 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
                 source_path.unlink()
         console.print("[bold green]ENA transfer complete.[/bold green]")
         return 0
+
+
+def _workspace_fallback(default_workspace: Path) -> Path:
+    """Suggest a workspace under the user's home directory when the default fails."""
+    return Path.home().resolve() / default_workspace.name
+
+
+def _prompt_workspace_directory(
+    console: Console,
+    default_workspace: Path,
+    *,
+    max_attempts: int = 3,
+) -> Path | None:
+    """Ask for a workspace directory until one can actually be created and written to."""
+    suggestion = default_workspace
+    fallback = _workspace_fallback(default_workspace)
+    for attempt in range(1, max_attempts + 1):
+        raw = typer.prompt("  Workspace directory", default=str(suggestion))
+        try:
+            workspace = errors_module.expand_path(raw, action="use")
+            return errors_module.ensure_writable_directory(workspace, action="write to")
+        except errors_module.UserError as exc:
+            console.print()
+            # Hints only help the first time; repeating them buries the prompt.
+            errors_module.print_user_error(console, exc, indent="  ", show_hints=attempt == 1)
+            if attempt == max_attempts:
+                break
+            if suggestion != fallback:
+                suggestion = fallback
+                console.print(f"  [dim]Suggested alternative: {fallback}[/dim]")
+            console.print()
+    console.print(
+        "\n  [bold red]Could not set up a workspace directory.[/bold red]\n"
+        "  Rerun [bold]mt transfer ena[/bold] from (or pointing at) a location you can write to."
+    )
+    return None
 
 
 def _select_webin_credentials(console: Console) -> config_module.EnaCredentials | None:
@@ -2017,7 +2222,14 @@ def _ensure_webin_cli_jar(console: Console) -> Path | None:
             return jar
         console.print(f"  [yellow]Warning:[/yellow] WEBIN_CLI_JAR={env_jar} not found; will download instead.")
 
-    WEBIN_CLI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        errors_module.ensure_writable_directory(WEBIN_CLI_CACHE_DIR, action="write to")
+    except errors_module.UserError as exc:
+        errors_module.print_user_error(console, exc, indent="  ")
+        console.print(f"  Download Webin-CLI manually: {WEBIN_CLI_RELEASES_URL}")
+        console.print("  Then set:  export WEBIN_CLI_JAR=/path/to/webin-cli.jar")
+        return None
+
     cached = sorted(WEBIN_CLI_CACHE_DIR.glob("webin-cli-*.jar"))
     if cached:
         jar = cached[-1]
@@ -2038,7 +2250,12 @@ def _download_webin_cli_jar(console: Console) -> Path | None:
         with urllib.request.urlopen(req, timeout=20) as resp:
             release = json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
-        console.print(f"  [bold red]Error:[/bold red] Could not fetch Webin-CLI release info: {exc}")
+        detail = errors_module.describe_error(exc)
+        errors_module.print_user_error(
+            console,
+            errors_module.UserError(f"Could not fetch Webin-CLI release info. {detail.message}", detail.hints),
+            indent="  ",
+        )
         console.print(f"  Download manually: {WEBIN_CLI_RELEASES_URL}")
         console.print("  Then set:  export WEBIN_CLI_JAR=/path/to/webin-cli.jar")
         return None
@@ -2074,7 +2291,12 @@ def _download_webin_cli_jar(console: Console) -> Path | None:
                         out.write(chunk)
                         progress.update(task, advance=len(chunk))
     except Exception as exc:
-        console.print(f"  [bold red]Error:[/bold red] Download failed: {exc}")
+        detail = errors_module.describe_error(exc, path=dest, action="write to")
+        errors_module.print_user_error(
+            console,
+            errors_module.UserError(f"Webin-CLI download failed. {detail.message}", detail.hints),
+            indent="  ",
+        )
         if dest.exists():
             dest.unlink()
         return None
@@ -2121,16 +2343,15 @@ def _run_sample_submissions_with_progress(
     jar: Path,
     credentials: config_module.EnaCredentials,
     context: str,
-    sample_manifests: list[tuple[str, Path]],
-    alias_to_files: dict[str, list[Path]],
+    run_manifests: list[tuple[str, samples_module.RunGroup, Path]],
     input_dir: Path,
     output_dir: Path,
     test_service: bool,
     log_dir: Path,
 ) -> bool:
-    """Run Webin-CLI per sample and display a live per-sample status table."""
-    aliases = [alias for alias, _ in sample_manifests]
-    statuses: dict[str, str] = {a: "pending" for a in aliases}
+    """Run Webin-CLI per run and display a live per-run status table."""
+    run_names = [run.run_name for _alias, run, _manifest in run_manifests]
+    statuses: dict[str, str] = {name: "pending" for name in run_names}
 
     def _status_cell(s: str) -> str:
         return {
@@ -2143,22 +2364,28 @@ def _run_sample_submissions_with_progress(
     def _build_table() -> Table:
         t = Table(title="ENA Data Submission", show_lines=True)
         t.add_column("Sample", style="cyan", no_wrap=True)
+        t.add_column("Run", style="magenta", no_wrap=True)
         t.add_column("Files", justify="right")
         t.add_column("Size (MB)", justify="right")
         t.add_column("Status")
-        for alias in aliases:
-            files = alias_to_files.get(alias, [])
+        for alias, run, _manifest in run_manifests:
             try:
-                total_mb = sum(f.stat().st_size for f in files if f.exists()) / 1024 / 1024
+                total_mb = sum(f.stat().st_size for f in run.files if f.exists()) / 1024 / 1024
             except OSError:
                 total_mb = 0.0
-            t.add_row(alias, str(len(files)), f"{total_mb:.1f}", _status_cell(statuses[alias]))
+            t.add_row(
+                alias,
+                run.run_name,
+                str(run.file_count),
+                f"{total_mb:.1f}",
+                _status_cell(statuses[run.run_name]),
+            )
         return t
 
     all_ok = True
     with Live(_build_table(), console=console, refresh_per_second=4) as live:
-        for alias, manifest in sample_manifests:
-            statuses[alias] = "running"
+        for _alias, run, manifest in run_manifests:
+            statuses[run.run_name] = "running"
             live.update(_build_table())
 
             success, output = _run_manifest_webin_cli(
@@ -2167,17 +2394,17 @@ def _run_sample_submissions_with_progress(
                 context=context,
                 manifest=manifest,
                 input_dir=input_dir,
-                output_dir=output_dir / alias,
+                output_dir=output_dir / run.run_name,
                 test_service=test_service,
             )
-            log_file = log_dir / f"webin-cli-{alias}.log"
+            log_file = log_dir / f"webin-cli-{run.run_name}.log"
             log_file.write_text(output)
-            statuses[alias] = "done" if success else "failed"
+            statuses[run.run_name] = "done" if success else "failed"
             live.update(_build_table())
             if not success:
                 all_ok = False
 
-    failed = [a for a in aliases if statuses[a] == "failed"]
+    failed = [name for name in run_names if statuses[name] == "failed"]
     if failed:
         console.print(f"  [bold red]Failed:[/bold red] {', '.join(failed)}")
         console.print(f"  Logs: {log_dir}")

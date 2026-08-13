@@ -176,23 +176,32 @@ performs these steps:
    writes service-specific project XML files such as ``test-project.xml`` or
    ``production-project.xml``, submits the study registration to ENA, and uses
    the returned ``PRJEB...`` accession for the submission.
-5. Lets you select a common sample checklist or enter another ``ERC...``
+5. Discovers the data files under the provided path and works out which files
+   form read pairs and which pairs belong to the same sample. Read markers
+   (``_R1``/``_R2``, ``_1``/``_2``, ``_forward``/``_reverse``, ``_f``/``_r``)
+   are recognised only at the end of a file name, and the ambiguous ones only
+   when the matching mate is present, so a field such as a flowcell id is never
+   mistaken for a read marker. The result is shown as a table — sample, number
+   of runs, number of files, example file names — together with any warnings,
+   and must be confirmed before anything is written. At the prompt you can
+   accept the grouping, pick a different rule for splitting file names into
+   sample names, supply your own regular expression, hand-edit the assignment
+   as a TSV, or stop the wizard. The confirmed assignment is saved as
+   ``sample_files.tsv`` in the workspace and drives the rest of the submission.
+6. Lets you select a common sample checklist or enter another ``ERC...``
    checklist accession.
-6. Fetches the checklist definition from ENA, discovers data files in the
-   provided path, and extracts unique sample names by stripping file extensions
-   and paired-end indicators (e.g. ``_R1``, ``_R2``, ``_1``, ``_2``,
-   ``_forward``, ``_reverse``). Writes a TSV metadata template pre-populated
-   with one row per detected sample, so you only need to fill in the biological
-   metadata rather than the sample list.
-7. Waits while you complete the TSV, then validates the completed file for the
+7. Fetches the checklist definition from ENA and writes a TSV metadata template
+   pre-populated with one row per confirmed sample, so you only need to fill in
+   the biological metadata rather than the sample list.
+8. Waits while you complete the TSV, then validates the completed file for the
    checklist row, required columns, mandatory checklist fields, duplicate sample
    aliases, and ASCII-only values.
-8. Reports the number of detected data files, whether they appear to be
-   paired-end or single-end, and shows up to three example file names. This
-   summary lets you confirm the right files were found before the manifest is
-   generated.
-9. Generates ``sample.xml``, ``submission.xml``, and a Webin-CLI manifest
-   template in the workspace.
+9. Generates ``sample.xml``, ``submission.xml``, and Webin-CLI manifest
+   templates in the workspace. For ``reads`` submissions one manifest is written
+   per run — that is, per read pair — because Webin-CLI treats a manifest as a
+   single run and accepts at most one pair. A sample sequenced across several
+   lanes or flowcells therefore produces several manifests that share the same
+   ``SAMPLE`` value and differ in ``NAME``.
 10. Waits while you review and complete the manifest template. The wizard stops
    if ``TODO`` placeholders remain.
 11. Writes ``submit-ena.sh`` and ``submit-ena.log``. In test-first mode it also

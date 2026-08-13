@@ -21,6 +21,7 @@ from rich.text import Text
 from mjolnirtools import __version__
 from mjolnirtools import config as config_module
 from mjolnirtools import ena
+from mjolnirtools import errors
 from mjolnirtools import shell
 from mjolnirtools import slurm
 
@@ -304,6 +305,8 @@ app = typer.Typer(
     ),
     no_args_is_help=True,
     rich_markup_mode="rich",
+    # Never render Typer's rich traceback panel; main() prints short messages.
+    pretty_exceptions_enable=False,
 )
 
 SYSTEM_SHORTCUTS = {
@@ -1581,9 +1584,29 @@ def main(argv: Sequence[str] | None = None, prog_name: str | None = None) -> int
         return exc.exit_code
     except typer.Exit as exc:
         return exc.exit_code
+    except errors.UserError as exc:
+        errors.print_user_error(Console(stderr=True), exc)
+        return 1
+    except (KeyboardInterrupt, click.Abort):
+        print("Cancelled.", file=sys.stderr)
+        return 130
+    except OSError as exc:
+        errors.print_user_error(Console(stderr=True), errors.describe_os_error(exc))
+        return 1
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
+    except Exception as exc:  # noqa: BLE001 - last resort, keep the CLI quiet
+        if os.environ.get("MT_TRACEBACK"):
+            raise
+        console = Console(stderr=True)
+        console.print(f"[bold red]Error:[/bold red] {type(exc).__name__}: {exc}")
+        console.print(
+            "  [dim]This looks like a bug in mjolnirtools. "
+            "Rerun with MT_TRACEBACK=1 for the full traceback, then report it at "
+            "https://github.com/alberdilab/mjolnirtools/issues[/dim]"
+        )
+        return 1
 
     if isinstance(rv, int):
         return rv
