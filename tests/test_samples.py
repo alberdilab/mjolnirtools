@@ -20,6 +20,25 @@ def _novogene_names(aliases=("AC79", "AC80", "AC81")):
     ]
 
 
+def _mixed_batch_names():
+    """Two sequencing orders covering different, overlapping sample sets."""
+    orders = {
+        "EKDL240003470-1A": ("223JWCLT4", "L2"),
+        "EKDL230051108-1A": ("22FN5HLT3", "L1"),
+    }
+    members = {
+        "AC79": ("EKDL240003470-1A",),
+        "AC82": ("EKDL230051108-1A",),
+        "AD65": ("EKDL230051108-1A", "EKDL240003470-1A"),
+    }
+    return [
+        f"{alias}_{order}_{orders[order][0]}_{orders[order][1]}_{mate}.fq.gz"
+        for alias, alias_orders in members.items()
+        for order in alias_orders
+        for mate in ("1", "2")
+    ]
+
+
 class StripExtensionTests(unittest.TestCase):
     def test_longest_matching_extension_wins(self):
         self.assertEqual(samples.strip_sequence_extension("reads.fq.gz"), "reads")
@@ -222,6 +241,52 @@ class GroupingTests(unittest.TestCase):
         grouping = samples.build_grouping(_paths(["AC79_R1.fq.gz", "AC79_R2.fq.gz", "ac79_R1.fq.gz", "ac79_R2.fq.gz"]))
 
         self.assertTrue(any("capitalisation" in warning for warning in grouping.warnings))
+
+    def test_library_id_is_dropped_when_batches_are_split_across_samples(self):
+        # The real submission: two Novogene orders, each covering part of the
+        # sample set, so the fields after the sample id are not a clean product
+        # of the ones before them and the depth heuristic cannot fire.
+        grouping = samples.build_grouping(_paths(_mixed_batch_names()))
+
+        self.assertEqual(grouping.scheme, "strip-technical")
+        self.assertEqual(grouping.aliases, ["AC79", "AC82", "AD65"])
+
+    def test_a_sample_sequenced_in_two_batches_becomes_one_sample(self):
+        # AD65 appears in both orders. Registering it twice would spend two ENA
+        # sample accessions on one piece of biological material.
+        grouping = samples.build_grouping(_paths(_mixed_batch_names()))
+        ad65 = next(sample for sample in grouping.samples if sample.alias == "AD65")
+
+        self.assertEqual(len(ad65.runs), 2)
+        self.assertEqual(ad65.file_count, 4)
+        self.assertEqual(
+            sorted(run.run_name for run in ad65.runs),
+            [
+                "AD65_EKDL230051108-1A_22FN5HLT3_L1",
+                "AD65_EKDL240003470-1A_223JWCLT4_L2",
+            ],
+        )
+
+    def test_the_per_library_grouping_is_still_offered(self):
+        runs, _ = samples.detect_runs(_paths(_mixed_batch_names()))
+        options = samples.scheme_options(runs)
+
+        per_library = [option for option in options if option.example_alias == "AC79_EKDL240003470-1A"]
+        self.assertEqual(len(per_library), 1)
+        self.assertEqual(per_library[0].sample_count, 4)
+        self.assertEqual(per_library[0].example_run, "AC79_EKDL240003470-1A_223JWCLT4_L2")
+
+    def test_biological_fields_are_not_mistaken_for_vendor_ids(self):
+        # 'Jejunum' is as long as a flowcell id but carries no digits, so the
+        # trailing-field rule must leave it alone.
+        grouping = samples.build_grouping(
+            _paths([
+                "AC79_Jejunum_L1_1.fq.gz", "AC79_Jejunum_L1_2.fq.gz",
+                "AC79_Duodenum_L1_1.fq.gz", "AC79_Duodenum_L1_2.fq.gz",
+            ])
+        )
+
+        self.assertEqual(grouping.aliases, ["AC79_Duodenum", "AC79_Jejunum"])
 
 
 class ReconcileTests(unittest.TestCase):

@@ -1393,13 +1393,21 @@ def _choose_grouping_scheme(console: Console, grouping: samples_module.Grouping)
     table.add_column("Samples", justify="right")
     table.add_column("Files/sample", justify="right")
     table.add_column("Example alias", style="white")
+    table.add_column("from run name", style="dim")
     for index, option in enumerate(options, start=1):
         span = (
             str(option.min_files)
             if option.min_files == option.max_files
             else f"{option.min_files}-{option.max_files}"
         )
-        table.add_row(str(index), option.label, str(option.sample_count), span, option.example_alias)
+        table.add_row(
+            str(index),
+            option.label,
+            str(option.sample_count),
+            span,
+            option.example_alias,
+            option.example_run,
+        )
     console.print()
     console.print(table)
 

@@ -170,18 +170,27 @@ def _suffix_tokens(stem: str, depth: int) -> tuple[str, ...]:
     return tuple(_tokens(stem)[depth:])
 
 
-def _is_flowcell_like(token: str) -> bool:
-    """Return True for long mixed alphanumeric ids such as ``223JWCLT4``."""
+def _is_vendor_id_like(token: str) -> bool:
+    """Return True for long mixed alphanumeric ids assigned by the facility.
+
+    Covers flowcell ids such as ``223JWCLT4`` and the library or order ids
+    sequencing providers put between the sample name and the flowcell, such as
+    Novogene's ``EKDL240003470-1A``. Hyphens are part of those ids, so they are
+    ignored when checking that the token is otherwise alphanumeric. Requiring
+    both letters and digits keeps biological fields — ``Jejunum``, ``caecum`` —
+    out, and the length floor keeps short factor levels such as ``T1`` out.
+    """
+    core = token.replace("-", "")
     return (
-        len(token) >= 8
-        and token.isalnum()
-        and any(char.isalpha() for char in token)
-        and any(char.isdigit() for char in token)
+        len(core) >= 8
+        and core.isalnum()
+        and any(char.isalpha() for char in core)
+        and any(char.isdigit() for char in core)
     )
 
 
 def _is_technical(token: str) -> bool:
-    return bool(_TECHNICAL_TOKEN_RE.match(token)) or _is_flowcell_like(token)
+    return bool(_TECHNICAL_TOKEN_RE.match(token)) or _is_vendor_id_like(token)
 
 
 def _strip_technical(stem: str) -> str:
@@ -306,7 +315,7 @@ def describe_scheme(scheme: str) -> str:
     if scheme == "stem":
         return "whole file name (one sample per run)"
     if scheme == "strip-technical":
-        return "file name without trailing lane/flowcell fields"
+        return "file name without trailing library/flowcell/lane fields"
     if scheme == "manual":
         return "sample_files.tsv edited by hand"
     if scheme.startswith("tokens:"):

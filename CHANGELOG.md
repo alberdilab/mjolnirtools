@@ -2,6 +2,35 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.2.2 - 2026-08-13
+
+### Fixed
+
+- `mt transfer ena` no longer keeps the sequencing facility's library id in the
+  sample alias. Trailing technical fields were recognised as long mixed
+  alphanumeric tokens, but the check rejected anything containing a hyphen, so
+  Novogene order ids such as `EKDL240003470-1A` survived into the alias while
+  the flowcell and lane were stripped. The generated checklist TSV then held one
+  row per library instead of one per sample, and a sample sequenced in two
+  orders — `AD65_EKDL230051108-1A` and `AD65_EKDL240003470-1A` — was registered
+  twice and spent two ENA sample accessions on one piece of biological material.
+  Hyphens are now ignored when testing a field, so the default grouping detects
+  `AC79` and `AD65` and collects both orders as two runs of one sample.
+
+  The depth heuristic already handled this when every sample came from the same
+  order, which is why the case only appeared on real submissions: with the
+  orders split across the sample set the trailing fields are no longer a clean
+  product of the leading ones, and detection fell back to the field-stripping
+  rule that carried the bug. Fields without digits — `Jejunum`, `caecum` — are
+  still treated as biological and kept in the alias.
+
+### Changed
+
+- The sample grouping table now shows the run name each example alias was
+  derived from, so the fields a rule drops are visible before it is chosen. The
+  per-library grouping remains available as an option for submissions where the
+  same sample code is reused between orders.
+
 ## 1.2.1 - 2026-08-13
 
 ### Fixed
