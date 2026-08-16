@@ -342,6 +342,15 @@ def validate_memory(value: str) -> str:
     return value
 
 
+def validate_optional_name(value: str | None) -> str | None:
+    """Validate an optional non-empty name argument for Typer."""
+    if value is None:
+        return None
+    if not value.strip():
+        raise typer.BadParameter("must be a non-empty string")
+    return value.strip()
+
+
 def parse_delimited_rows(output: str, column_count: int) -> list[tuple[str, ...]]:
     """Parse pipe-delimited Slurm output into fixed-width tuples."""
     rows: list[tuple[str, ...]] = []
@@ -709,9 +718,23 @@ def print_system_overview(rows: list[ResourceUsageRow]) -> None:
     console.print(commands)
 
 
-def run_interactive_session(hours: int, cpus: int, mem: str) -> None:
+def run_interactive_session(
+    hours: int,
+    cpus: int,
+    mem: str,
+    partition: str | None = None,
+    node: str | None = None,
+    gpus: int | None = None,
+) -> None:
     """Run the interactive Slurm session command."""
-    command = slurm.build_interactive_command(hours=hours, cpus=cpus, mem=mem)
+    command = slurm.build_interactive_command(
+        hours=hours,
+        cpus=cpus,
+        mem=mem,
+        partition=partition,
+        node=node,
+        gpus=gpus,
+    )
     raise typer.Exit(slurm.run_command(command))
 
 
@@ -758,12 +781,52 @@ def slurm_command(
             rich_help_panel="Interactive resource requests",
         ),
     ] = "8G",
+    gpus: Annotated[
+        int | None,
+        typer.Option(
+            "--gpus",
+            "--gpu",
+            min=1,
+            help="GPUs for an interactive session (requests --gres=gpu:N).",
+            show_default=False,
+            rich_help_panel="Interactive resource requests",
+        ),
+    ] = None,
+    partition: Annotated[
+        str | None,
+        typer.Option(
+            "--partition",
+            "-p",
+            callback=validate_optional_name,
+            help="Partition for an interactive session, for example gpuqueue.",
+            show_default=False,
+            rich_help_panel="Interactive placement",
+        ),
+    ] = None,
+    node: Annotated[
+        str | None,
+        typer.Option(
+            "--node",
+            "--nodelist",
+            callback=validate_optional_name,
+            help="Run the interactive session on a specific node.",
+            show_default=False,
+            rich_help_panel="Interactive placement",
+        ),
+    ] = None,
 ) -> None:
     """Run Slurm monitoring commands."""
     if target == "interactive":
         if hours is None:
             raise click.UsageError("mt slurm interactive requires hours.")
-        run_interactive_session(hours=hours, cpus=cpus, mem=mem)
+        run_interactive_session(
+            hours=hours,
+            cpus=cpus,
+            mem=mem,
+            partition=partition,
+            node=node,
+            gpus=gpus,
+        )
     elif hours is not None:
         raise click.UsageError(f"mt slurm {target} does not accept hours.")
     elif target == "list":

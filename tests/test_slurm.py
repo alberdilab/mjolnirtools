@@ -169,6 +169,53 @@ class SlurmCommandTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             slurm.build_interactive_command(hours=4, cpus=0)
 
+    def test_interactive_command_accepts_partition_and_gpus(self):
+        self.assertEqual(
+            slurm.build_interactive_command(
+                hours=4, cpus=8, mem="64G", partition="gpuqueue", gpus=2
+            ),
+            [
+                "srun",
+                "--nodes=1",
+                "--ntasks=1",
+                "--partition=gpuqueue",
+                "--cpus-per-task=8",
+                "--gres=gpu:2",
+                "--mem=64G",
+                "--time=4:00:00",
+                "--pty",
+                "bash",
+            ],
+        )
+
+    def test_interactive_command_accepts_a_specific_node(self):
+        self.assertEqual(
+            slurm.build_interactive_command(hours=2, node="mjolnircomp01fl"),
+            [
+                "srun",
+                "--nodes=1",
+                "--ntasks=1",
+                "--nodelist=mjolnircomp01fl",
+                "--cpus-per-task=4",
+                "--mem=8G",
+                "--time=2:00:00",
+                "--pty",
+                "bash",
+            ],
+        )
+
+    def test_empty_interactive_partition_is_rejected(self):
+        with self.assertRaises(ValueError):
+            slurm.build_interactive_command(hours=4, partition="  ")
+
+    def test_empty_interactive_node_is_rejected(self):
+        with self.assertRaises(ValueError):
+            slurm.build_interactive_command(hours=4, node="")
+
+    def test_invalid_gpus_are_rejected(self):
+        with self.assertRaises(ValueError):
+            slurm.build_interactive_command(hours=4, gpus=0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,13 +31,13 @@ Usage:
 
 .. code-block:: console
 
-   $ mt slurm interactive <hours> [--cpus CPUS] [--mem MEM]
+   $ mt slurm interactive <hours> [--cpus CPUS] [--mem MEM] [--gpus GPUS] [--partition PARTITION] [--node NODE]
 
 Shortcut:
 
 .. code-block:: console
 
-   $ mt interactive <hours> [--cpus CPUS] [--mem MEM]
+   $ mt interactive <hours> [--cpus CPUS] [--mem MEM] [--gpus GPUS] [--partition PARTITION] [--node NODE]
 
 Arguments:
 
@@ -54,11 +54,29 @@ Options:
    Memory for the session. This must be a non-empty string. The default is
    ``8G``.
 
+``--gpus`` (also ``--gpu``)
+   Number of GPUs for the session. This must be a positive integer. When
+   given, the session requests ``--gres=gpu:<gpus>``. By default no GPU is
+   requested, so the session runs on CPUs only.
+
+``--partition`` (also ``-p``)
+   Partition to submit the session to, for example ``gpuqueue``. By default
+   Slurm picks the cluster's default partition. Run ``mt system partitions``
+   to see the partitions available to you.
+
+``--node`` (also ``--nodelist``)
+   Run the session on a specific node, for example ``mjolnircomp01fl``. The
+   session waits until that node has room, so leave this unset unless you
+   need a particular machine. Run ``mt system nodes`` to list node names,
+   states, CPUs, memory, and GRES (GPU) resources.
+
 The command builds and runs:
 
 .. code-block:: console
 
-   $ srun --nodes=1 --ntasks=1 --cpus-per-task=<cpus> --mem=<mem> --time=<hours>:00:00 --pty bash
+   $ srun --nodes=1 --ntasks=1 [--partition=<partition>] [--nodelist=<node>] --cpus-per-task=<cpus> [--gres=gpu:<gpus>] --mem=<mem> --time=<hours>:00:00 --pty bash
+
+The bracketed flags are only added when the matching option is given.
 
 Examples:
 
@@ -66,7 +84,16 @@ Examples:
 
    $ mt slurm interactive 4
    $ mt slurm interactive 4 --cpus 8 --mem 16G
+   $ mt slurm interactive 4 --partition gpuqueue --gpus 1
+   $ mt slurm interactive 2 --node mjolnircomp01fl
    $ mt interactive 4
+
+Choosing CPU or GPU resources is a matter of which partition you land on and
+whether you request a GPU. A session with no ``--gpus`` gets CPUs only, even
+on a partition that has GPUs; asking for ``--gpus`` on a partition without
+GPUs leaves the job pending. Check ``mt system partitions`` and
+``mt system nodes`` first if you are unsure which combination your cluster
+expects.
 
 After the command starts, your shell is running inside the allocation. Type
 ``exit`` when you are finished so Slurm can release the resources.

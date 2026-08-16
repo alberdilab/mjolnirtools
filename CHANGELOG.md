@@ -2,6 +2,18 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.2.3 - 2026-08-16
+
+### Added
+
+- `mt slurm interactive` (and the `mt interactive` shortcut) now accept
+  `--partition/-p`, `--node/--nodelist`, and `--gpus/--gpu`. Until now the
+  command could only vary CPUs and memory, so it always landed on the default
+  partition with no GPU and no way to pick a machine. `--gpus N` adds
+  `--gres=gpu:N`, `--partition` adds `--partition=<name>`, and `--node` adds
+  `--nodelist=<name>`; each flag is only passed to `srun` when given, so the
+  default command is unchanged.
+
 ## 1.2.2 - 2026-08-13
 
 ### Fixed

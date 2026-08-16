@@ -25,22 +25,49 @@ def validate_memory(value: str) -> str:
     return value
 
 
-def build_interactive_command(hours: int, cpus: int = 4, mem: str = "8G") -> list[str]:
+def validate_name(value: str, name: str) -> str:
+    """Return the stripped *value* if it is a non-empty name."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string.")
+    return value.strip()
+
+
+def build_interactive_command(
+    hours: int,
+    cpus: int = 4,
+    mem: str = "8G",
+    partition: str | None = None,
+    node: str | None = None,
+    gpus: int | None = None,
+) -> list[str]:
     """Build the Slurm command for an interactive shell session."""
     validate_positive_integer(hours, "hours")
     validate_positive_integer(cpus, "cpus")
     validate_memory(mem)
 
-    return [
-        "srun",
-        "--nodes=1",
-        "--ntasks=1",
-        f"--cpus-per-task={cpus}",
-        f"--mem={mem}",
-        f"--time={hours}:00:00",
-        "--pty",
-        "bash",
-    ]
+    command = ["srun", "--nodes=1", "--ntasks=1"]
+
+    if partition is not None:
+        command.append(f"--partition={validate_name(partition, 'partition')}")
+
+    if node is not None:
+        command.append(f"--nodelist={validate_name(node, 'node')}")
+
+    command.append(f"--cpus-per-task={cpus}")
+
+    if gpus is not None:
+        validate_positive_integer(gpus, "gpus")
+        command.append(f"--gres=gpu:{gpus}")
+
+    command.extend(
+        [
+            f"--mem={mem}",
+            f"--time={hours}:00:00",
+            "--pty",
+            "bash",
+        ]
+    )
+    return command
 
 
 SQUEUE_FORMAT = "%i|%P|%j|%u|%T|%M|%l|%m|%k"

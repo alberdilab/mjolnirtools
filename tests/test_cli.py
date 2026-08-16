@@ -49,6 +49,46 @@ class CliTests(unittest.TestCase):
             ]
         )
 
+    def test_interactive_dispatch_forwards_partition_node_and_gpus(self):
+        with mock.patch("mjolnirtools.cli.slurm.run_command", return_value=0) as run_command:
+            exit_code = cli.main(
+                [
+                    "interactive",
+                    "4",
+                    "--partition",
+                    "gpuqueue",
+                    "--node",
+                    "mjolnircomp01fl",
+                    "--gpus",
+                    "2",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(
+            [
+                "srun",
+                "--nodes=1",
+                "--ntasks=1",
+                "--partition=gpuqueue",
+                "--nodelist=mjolnircomp01fl",
+                "--cpus-per-task=4",
+                "--gres=gpu:2",
+                "--mem=8G",
+                "--time=4:00:00",
+                "--pty",
+                "bash",
+            ]
+        )
+
+    def test_invalid_gpus_exit_during_argument_parsing(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["interactive", "4", "--gpus", "0"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("Invalid value for '--gpus'", stderr.getvalue())
+
     def test_invalid_hours_exit_during_argument_parsing(self):
         stderr = io.StringIO()
         with redirect_stderr(stderr):
