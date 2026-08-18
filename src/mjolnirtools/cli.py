@@ -916,14 +916,27 @@ def matches_name_pattern(value: str, pattern: str) -> bool:
     return wanted in candidate
 
 
+def job_matches_label(row: SlurmJobRow, pattern: str) -> bool:
+    """Return whether a queue row's name or comment matches *pattern*.
+
+    Workflow managers often set the job name to an opaque identifier and put
+    the readable rule name in the Slurm comment, so both fields are matched.
+    """
+    job_name, comment = row[2], row[8]
+    return matches_name_pattern(job_name, pattern) or matches_name_pattern(
+        comment, pattern
+    )
+
+
 def job_matches_target(row: SlurmJobRow, target: str) -> bool:
     """Return whether a queue row matches one ``mt cancel`` target.
 
     Numeric targets match the job id exactly, plus the array elements and job
     steps that belong to it, so ``12345`` also selects ``12345_3``. Anything
-    else is matched against the job name as a glob or a substring.
+    else is matched against the job name and the Slurm comment as a glob or a
+    substring.
     """
-    job_id, _partition, job_name = row[0], row[1], row[2]
+    job_id = row[0]
     candidate = target.strip()
     if not candidate:
         return False
@@ -935,7 +948,7 @@ def job_matches_target(row: SlurmJobRow, target: str) -> bool:
             or job_id.startswith(f"{candidate}.")
         )
 
-    return matches_name_pattern(job_name, candidate)
+    return job_matches_label(row, candidate)
 
 
 def select_cancel_jobs(
@@ -952,7 +965,7 @@ def select_cancel_jobs(
         candidates = [row for row in candidates if row[1].lower() == wanted_partition]
 
     if name is not None:
-        candidates = [row for row in candidates if matches_name_pattern(row[2], name)]
+        candidates = [row for row in candidates if job_matches_label(row, name)]
 
     explicit_targets = [
         target
@@ -1012,7 +1025,7 @@ def cancel_command(
         list[str] | None,
         typer.Argument(
             help=(
-                "Job ids to cancel, a job name pattern, or one of: "
+                "Job ids to cancel, a job name or comment pattern, or one of: "
                 "all, pending, running, suspended."
             ),
             show_default=False,
@@ -1024,7 +1037,10 @@ def cancel_command(
             "--name",
             "-n",
             callback=validate_optional_name,
-            help="Cancel only jobs whose name matches this glob or substring.",
+            help=(
+                "Cancel only jobs whose name or Slurm comment matches this "
+                "glob or substring."
+            ),
             show_default=False,
             rich_help_panel="Job selection",
         ),
@@ -1120,10 +1136,17 @@ def cancel_command(
 
     console = Console()
     for target in unmatched:
-        console.print(
-            f"[yellow]No queued job matches '{target}'.[/yellow] "
-            "[dim]It may have finished already; try mt slurm list.[/dim]"
-        )
+        if slurm.is_cancellable_job_id(target):
+            console.print(
+                f"[yellow]No queued job matches '{target}'.[/yellow] "
+                "[dim]It may have finished already; try mt slurm list.[/dim]"
+            )
+        else:
+            console.print(
+                f"[yellow]No queued job name or comment matches '{target}'.[/yellow] "
+                "[dim]Quote the pattern so the shell does not expand it, "
+                "and check the names with mt slurm list.[/dim]"
+            )
 
     if not selected:
         console.print("No matching jobs to cancel.")

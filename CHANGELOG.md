@@ -2,6 +2,21 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.3.1 - 2026-08-18
+
+### Fixed
+
+- `mt cancel` now matches the Slurm comment as well as the job name. Workflow
+  managers submit jobs under an opaque name and put the readable rule name in
+  the comment: a Snakemake queue shows the job name
+  `bc622224-48bf-4b55-a819-aa0c24` and the comment
+  `rule_comebin_wildcards_HC00267`. Matching only the name meant
+  `mt cancel "*comebin*"` reported that nothing matched, even though the whole
+  queue was made of those jobs, which is precisely the case where cancelling
+  by pattern is most useful. Both `<pattern>` targets and `--name` now test the
+  name and the comment, and a pattern that still matches nothing says so
+  explicitly and suggests quoting it.
+
 ## 1.3.0 - 2026-08-18
 
 ### Added

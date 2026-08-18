@@ -263,12 +263,20 @@ Targets:
    Only your suspended jobs.
 
 ``<pattern>``
-   Anything that is not a job id or a keyword is matched against the job name.
-   A target containing ``*``, ``?``, or ``[`` is treated as a glob pattern;
-   anything else is treated as a case-insensitive substring. So
-   ``mt cancel assembly`` cancels every job whose name contains ``assembly``,
-   and ``mt cancel "map_*"`` cancels every job whose name starts with
-   ``map_``. Quote patterns so the shell does not expand them first.
+   Anything that is not a job id or a keyword is matched against the job name
+   and the Slurm comment. A target containing ``*``, ``?``, or ``[`` is treated
+   as a glob pattern; anything else is treated as a case-insensitive substring.
+   So ``mt cancel assembly`` cancels every job whose name or comment contains
+   ``assembly``, and ``mt cancel "map_*"`` cancels every job whose name or
+   comment starts with ``map_``. Quote patterns so the shell does not expand
+   them first.
+
+   Matching the comment matters for workflow managers. Snakemake, for example,
+   submits jobs with an opaque job name such as
+   ``bc622224-48bf-4b55-a819-aa0c24`` and puts the readable rule name in the
+   comment, so ``mt cancel "*comebin*"`` selects the jobs of the ``comebin``
+   rule even though the job name says nothing about it. Run ``mt slurm list``
+   to see both columns.
 
 Several targets can be combined. ``mt cancel 12345 12346 prokka`` cancels the
 two job ids and every job whose name contains ``prokka``.
@@ -276,8 +284,8 @@ two job ids and every job whose name contains ``prokka``.
 Options:
 
 ``--name`` (also ``-n``)
-   Keep only jobs whose name matches this glob or substring. This filters the
-   selection, so it can be combined with a target:
+   Keep only jobs whose name or Slurm comment matches this glob or substring.
+   This filters the selection, so it can be combined with a target:
    ``mt cancel pending --name "map_*"``.
 
 ``--partition`` (also ``-p``)
@@ -336,6 +344,7 @@ Examples:
    $ mt cancel pending
    $ mt cancel pending --partition gpuqueue
    $ mt cancel "assembly_*"
+   $ mt cancel "*comebin*" --dry-run
    $ mt cancel running --signal TERM
    $ mt cancel all --yes
 

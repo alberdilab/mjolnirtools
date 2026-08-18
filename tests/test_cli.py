@@ -242,6 +242,65 @@ class CliTests(unittest.TestCase):
             "12348_[1-5]|short|array_job|alice|PENDING|0:00|2:00:00|16G|\n"
         )
 
+    def _workflow_queue_output(self):
+        """Snakemake-style rows: opaque job names, rule names in the comment."""
+        return (
+            "45391628|gpuqueue|bc622224-48bf|jpl786|PENDING|0:00|3:36:00|16G|"
+            "rule_comebin_wildcards_HC00267\n"
+            "45391505|gpuqueue|bc622224-48bf|jpl786|PENDING|0:00|4:06:00|16G|"
+            "rule_semibin2_wildcards_HC00397\n"
+            "45391629|gpuqueue|bc622224-48bf|jpl786|RUNNING|0:58|12:04:00|16G|"
+            "rule_semibin2_wildcards_HC00358\n"
+        )
+
+    def _run_workflow_cancel(self, args):
+        stdout = io.StringIO()
+        with mock.patch(
+            "mjolnirtools.cli.slurm.capture_command_output",
+            return_value=(0, self._workflow_queue_output()),
+        ):
+            with mock.patch(
+                "mjolnirtools.cli.slurm.run_command", return_value=0
+            ) as run_command:
+                with redirect_stdout(stdout):
+                    exit_code = cli.main(args)
+
+        return exit_code, run_command, stdout.getvalue()
+
+    def test_cancel_matches_the_slurm_comment_by_glob(self):
+        exit_code, run_command, _ = self._run_workflow_cancel(
+            ["cancel", "*comebin*", "-y"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["scancel", "45391628"])
+
+    def test_cancel_matches_the_slurm_comment_by_substring(self):
+        exit_code, run_command, _ = self._run_workflow_cancel(
+            ["cancel", "semibin2", "-y"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["scancel", "45391505", "45391629"])
+
+    def test_cancel_name_option_matches_the_slurm_comment(self):
+        exit_code, run_command, _ = self._run_workflow_cancel(
+            ["cancel", "pending", "--name", "*HC00397", "-y"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["scancel", "45391505"])
+
+    def test_cancel_hints_at_quoting_when_a_pattern_matches_nothing(self):
+        exit_code, run_command, output = self._run_workflow_cancel(
+            ["cancel", "*metabat*", "-y"]
+        )
+
+        self.assertEqual(exit_code, 1)
+        run_command.assert_not_called()
+        self.assertIn("No queued job name or comment matches", output)
+        self.assertIn("Quote the pattern", output)
+
     def _run_cancel(self, args):
         stdout = io.StringIO()
         with mock.patch(
