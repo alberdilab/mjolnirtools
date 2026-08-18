@@ -3,9 +3,10 @@
 Slurm
 =====
 
-The ``slurm`` commands cover interactive sessions and job monitoring.
-Use them to start a hands-on allocation on a compute node, check your queued
-and running jobs, or inspect a specific job's resource usage.
+The ``slurm`` commands cover interactive sessions, job monitoring, and job
+cancellation. Use them to start a hands-on allocation on a compute node, check
+your queued and running jobs, inspect a specific job's resource usage, or stop
+jobs you no longer need.
 
 .. contents::
    :local:
@@ -106,8 +107,8 @@ which jobs are mine, are they waiting or running, and what resources did a
 job use? The ``mt slurm`` commands present common ``squeue`` and ``sacct``
 views as readable Rich tables.
 
-Use these commands from a login node. They inspect scheduler state; they do
-not start, cancel, or modify jobs.
+Use these commands from a login node. They only inspect scheduler state; use
+``mt slurm cancel`` to stop jobs.
 
 ``mt slurm``
 ~~~~~~~~~~~~
@@ -214,3 +215,137 @@ The command runs:
 Use this after a job has started or finished to inspect elapsed time,
 requested memory, and maximum resident memory when Slurm accounting reports
 it.
+
+Job Cancellation
+----------------
+
+``mt slurm cancel`` stops jobs that are waiting or running. It is a wrapper
+around ``scancel``, with one important difference: it first looks up the
+matching jobs with ``squeue``, shows them in a table, and asks for
+confirmation. Nothing is cancelled until the selection has been shown.
+
+``mt slurm cancel``
+~~~~~~~~~~~~~~~~~~~
+
+Cancel one job, several jobs, or every job that matches a selection.
+
+Usage:
+
+.. code-block:: console
+
+   $ mt slurm cancel <target> [<target> ...] [--name PATTERN] [--partition PARTITION] [--state STATES] [--user USER] [--signal SIGNAL] [--dry-run] [--yes]
+
+Shortcut:
+
+.. code-block:: console
+
+   $ mt cancel <target> [<target> ...]
+
+Targets:
+
+``<jobid>``
+   A Slurm job id, for example ``12345``. Job steps (``12345.batch``) and job
+   array elements (``12345_3``) are also accepted. A plain job id also selects
+   the array elements and steps that belong to it, so ``mt cancel 12345``
+   cancels a whole job array submitted as ``12345``.
+
+``all``
+   Every job of yours currently in the queue.
+
+``pending``
+   Only your pending (waiting) jobs. Useful when a large batch is queued
+   behind a mistake and the running jobs should be left alone.
+
+``running``
+   Only your running jobs.
+
+``suspended``
+   Only your suspended jobs.
+
+``<pattern>``
+   Anything that is not a job id or a keyword is matched against the job name.
+   A target containing ``*``, ``?``, or ``[`` is treated as a glob pattern;
+   anything else is treated as a case-insensitive substring. So
+   ``mt cancel assembly`` cancels every job whose name contains ``assembly``,
+   and ``mt cancel "map_*"`` cancels every job whose name starts with
+   ``map_``. Quote patterns so the shell does not expand them first.
+
+Several targets can be combined. ``mt cancel 12345 12346 prokka`` cancels the
+two job ids and every job whose name contains ``prokka``.
+
+Options:
+
+``--name`` (also ``-n``)
+   Keep only jobs whose name matches this glob or substring. This filters the
+   selection, so it can be combined with a target:
+   ``mt cancel pending --name "map_*"``.
+
+``--partition`` (also ``-p``)
+   Keep only jobs on this partition, for example ``gpuqueue``.
+
+``--state``
+   Keep only jobs in these Slurm states, given as a comma-separated list, for
+   example ``--state PENDING,RUNNING``. The ``pending`` and ``running``
+   targets are shorthands for the common cases.
+
+``--user`` (also ``-u``)
+   Look up the jobs of another user instead of your own. Slurm still decides
+   whether you are allowed to cancel them; normal users can only cancel their
+   own jobs.
+
+``--signal``
+   Send this signal to the selected jobs instead of cancelling them, for
+   example ``--signal TERM`` or ``--signal USR1``. This runs
+   ``scancel --signal=<name>``, which signals running jobs without removing
+   them from the queue. Use it when a job can checkpoint or shut down cleanly
+   on a signal.
+
+``--dry-run``
+   Show the jobs that match the selection and stop. Nothing is cancelled.
+   Use this first when cancelling by pattern or with ``all``.
+
+``--yes`` (also ``-y``)
+   Do not ask for confirmation. Required when the command runs outside an
+   interactive terminal, for example inside a script; without a terminal and
+   without ``--yes`` the command stops instead of guessing.
+
+The command first runs a lookup, for example:
+
+.. code-block:: console
+
+   $ squeue -u <current_user> [--states=<states>] --noheader --format="%i|%P|%j|%u|%T|%M|%l|%m|%k"
+
+then cancels the resolved job ids:
+
+.. code-block:: console
+
+   $ scancel [--signal=<signal>] <jobid> [<jobid> ...]
+
+Because the job ids come from the queue lookup, a target that matches nothing
+is reported as a warning rather than passed to ``scancel``. This is normal for
+a job that finished between the moment it was listed and the moment it was
+cancelled.
+
+Examples:
+
+.. code-block:: console
+
+   $ mt slurm cancel 12345
+   $ mt cancel 12345 12346 12347
+   $ mt cancel all --dry-run
+   $ mt cancel pending
+   $ mt cancel pending --partition gpuqueue
+   $ mt cancel "assembly_*"
+   $ mt cancel running --signal TERM
+   $ mt cancel all --yes
+
+Exit codes follow the usual convention: ``0`` when the cancellation succeeded
+or when there was nothing to cancel, ``1`` when a requested job id matched no
+queued job, and the ``scancel`` exit code when Slurm itself refused the
+request.
+
+.. warning::
+
+   ``mt cancel all`` cancels every job you have in the queue, including jobs
+   started from other terminals or screen sessions. Run it with ``--dry-run``
+   first if you are not sure what is queued.

@@ -234,6 +234,213 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("Traceback", stderr.getvalue())
         capture_command_output.assert_not_called()
 
+    def _cancel_queue_output(self):
+        return (
+            "12345|short|assembly_a|alice|RUNNING|00:10|1:00:00|8G|\n"
+            "12346|short|assembly_b|alice|PENDING|0:00|1:00:00|8G|\n"
+            "12347|gpuqueue|prokka_run|alice|PENDING|0:00|2:00:00|16G|\n"
+            "12348_[1-5]|short|array_job|alice|PENDING|0:00|2:00:00|16G|\n"
+        )
+
+    def _run_cancel(self, args):
+        stdout = io.StringIO()
+        with mock.patch(
+            "mjolnirtools.cli.slurm.capture_command_output",
+            return_value=(0, self._cancel_queue_output()),
+        ) as capture_command_output:
+            with mock.patch(
+                "mjolnirtools.cli.slurm.run_command", return_value=0
+            ) as run_command:
+                with redirect_stdout(stdout):
+                    exit_code = cli.main(args)
+
+        return exit_code, capture_command_output, run_command, stdout.getvalue()
+
+    def test_cancel_dispatch_cancels_a_single_job_id(self):
+        exit_code, capture, run_command, _ = self._run_cancel(
+            ["cancel", "12345", "--yes"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        capture.assert_called_once_with(cli.slurm.build_slurm_list_command())
+        run_command.assert_called_once_with(["scancel", "12345"])
+
+    def test_slurm_cancel_is_routed_to_the_cancel_command(self):
+        exit_code, _, run_command, _ = self._run_cancel(
+            ["slurm", "cancel", "12345", "12346", "--yes"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["scancel", "12345", "12346"])
+
+    def test_cancel_all_cancels_every_queued_job(self):
+        exit_code, capture, run_command, _ = self._run_cancel(["cancel", "all", "-y"])
+
+        self.assertEqual(exit_code, 0)
+        capture.assert_called_once_with(cli.slurm.build_slurm_list_command())
+        run_command.assert_called_once_with(
+            ["scancel", "12345", "12346", "12347", "12348_[1-5]"]
+        )
+
+    def test_cancel_pending_filters_the_queue_lookup_by_state(self):
+        exit_code, capture, _, _ = self._run_cancel(["cancel", "pending", "-y"])
+
+        self.assertEqual(exit_code, 0)
+        capture.assert_called_once_with(
+            cli.slurm.build_slurm_list_command(states=["PENDING"])
+        )
+
+    def test_cancel_accepts_a_state_option(self):
+        exit_code, capture, _, _ = self._run_cancel(
+            ["cancel", "all", "--state", "pending,running", "-y"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        capture.assert_called_once_with(
+            cli.slurm.build_slurm_list_command(states=["PENDING", "RUNNING"])
+        )
+
+    def test_cancel_looks_up_another_user_when_requested(self):
+        exit_code, capture, _, _ = self._run_cancel(
+            ["cancel", "all", "--user", "bob", "-y"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        capture.assert_called_once_with(cli.slurm.build_slurm_list_command(user="bob"))
+
+    def test_cancel_matches_job_names_by_substring(self):
+        exit_code, _, run_command, _ = self._run_cancel(["cancel", "assembly", "-y"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["scancel", "12345", "12346"])
+
+    def test_cancel_matches_job_names_by_glob(self):
+        exit_code, _, run_command, _ = self._run_cancel(["cancel", "prokka*", "-y"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["scancel", "12347"])
+
+    def test_cancel_filters_by_partition(self):
+        exit_code, _, run_command, _ = self._run_cancel(
+            ["cancel", "all", "--partition", "gpuqueue", "-y"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["scancel", "12347"])
+
+    def test_cancel_filters_by_name_option_without_a_target(self):
+        exit_code, _, run_command, _ = self._run_cancel(
+            ["cancel", "--name", "assembly_*", "-y"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["scancel", "12345", "12346"])
+
+    def test_cancel_expands_a_job_array_base_id(self):
+        exit_code, _, run_command, _ = self._run_cancel(["cancel", "12348", "-y"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["scancel", "12348_[1-5]"])
+
+    def test_cancel_sends_a_signal_when_requested(self):
+        exit_code, _, run_command, _ = self._run_cancel(
+            ["cancel", "12345", "--signal", "TERM", "-y"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_called_once_with(["scancel", "--signal=TERM", "12345"])
+
+    def test_cancel_dry_run_cancels_nothing(self):
+        exit_code, _, run_command, output = self._run_cancel(
+            ["cancel", "all", "--dry-run"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_not_called()
+        self.assertIn("Nothing was cancelled", output)
+
+    def test_cancel_reports_unmatched_targets(self):
+        exit_code, _, run_command, output = self._run_cancel(["cancel", "99999", "-y"])
+
+        self.assertEqual(exit_code, 1)
+        run_command.assert_not_called()
+        self.assertIn("No queued job matches", output)
+
+    def test_cancel_reports_an_empty_queue(self):
+        stdout = io.StringIO()
+        with mock.patch(
+            "mjolnirtools.cli.slurm.capture_command_output", return_value=(0, "")
+        ):
+            with mock.patch("mjolnirtools.cli.slurm.run_command") as run_command:
+                with redirect_stdout(stdout):
+                    exit_code = cli.main(["cancel", "all", "-y"])
+
+        self.assertEqual(exit_code, 0)
+        run_command.assert_not_called()
+        self.assertIn("No matching jobs to cancel", stdout.getvalue())
+
+    def test_cancel_requires_a_target_or_a_filter(self):
+        stderr = io.StringIO()
+        with mock.patch(
+            "mjolnirtools.cli.slurm.capture_command_output"
+        ) as capture_command_output:
+            with redirect_stderr(stderr):
+                exit_code = cli.main(["cancel"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("Usage: mt cancel", stderr.getvalue())
+        capture_command_output.assert_not_called()
+
+    def test_cancel_asks_for_confirmation_before_cancelling(self):
+        stdout = io.StringIO()
+        with mock.patch(
+            "mjolnirtools.cli.slurm.capture_command_output",
+            return_value=(0, self._cancel_queue_output()),
+        ):
+            with mock.patch("mjolnirtools.cli.slurm.run_command") as run_command:
+                with mock.patch("sys.stdin.isatty", return_value=True):
+                    with mock.patch("typer.confirm", return_value=False) as confirm:
+                        with redirect_stdout(stdout):
+                            exit_code = cli.main(["cancel", "all"])
+
+        self.assertEqual(exit_code, 0)
+        confirm.assert_called_once()
+        run_command.assert_not_called()
+        self.assertIn("No jobs were cancelled", stdout.getvalue())
+
+    def test_cancel_refuses_to_prompt_without_a_terminal(self):
+        stdout = io.StringIO()
+        with mock.patch(
+            "mjolnirtools.cli.slurm.capture_command_output",
+            return_value=(0, self._cancel_queue_output()),
+        ):
+            with mock.patch("mjolnirtools.cli.slurm.run_command") as run_command:
+                with mock.patch("sys.stdin.isatty", return_value=False):
+                    with redirect_stdout(stdout):
+                        exit_code = cli.main(["cancel", "all"])
+
+        self.assertEqual(exit_code, 1)
+        run_command.assert_not_called()
+        self.assertIn("--yes", stdout.getvalue())
+
+    def test_cancel_returns_the_scancel_exit_code(self):
+        with mock.patch(
+            "mjolnirtools.cli.slurm.capture_command_output",
+            return_value=(0, self._cancel_queue_output()),
+        ):
+            with mock.patch("mjolnirtools.cli.slurm.run_command", return_value=1):
+                with redirect_stdout(io.StringIO()):
+                    exit_code = cli.main(["cancel", "12345", "-y"])
+
+        self.assertEqual(exit_code, 1)
+
+    def test_select_cancel_jobs_reports_matched_and_unmatched_targets(self):
+        rows = cli.parse_slurm_jobs_output(self._cancel_queue_output())
+        selected, unmatched = cli.select_cancel_jobs(rows, ["12345", "missing"])
+
+        self.assertEqual([row[0] for row in selected], ["12345"])
+        self.assertEqual(unmatched, ["missing"])
+
     def test_version_returns_zero(self):
         stdout = io.StringIO()
         with redirect_stdout(stdout):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import getpass
+import re
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -124,6 +125,67 @@ def build_slurm_job_command(job_id: str) -> list[str]:
         "-j",
         job_id,
     ]
+
+
+JOB_ID_PATTERN = re.compile(r"^\d+(?:[._][A-Za-z0-9_-]+)?$")
+JOB_ARRAY_ID_PATTERN = re.compile(r"^\d+_\[[0-9,\-%:]+\]$")
+
+CANCELLABLE_STATES = ("PENDING", "RUNNING", "SUSPENDED", "CONFIGURING", "COMPLETING")
+
+
+def is_job_id(value: str) -> bool:
+    """Return whether *value* looks like a Slurm job or job-step id."""
+    if not isinstance(value, str):
+        return False
+    return bool(JOB_ID_PATTERN.fullmatch(value.strip()))
+
+
+def is_cancellable_job_id(value: str) -> bool:
+    """Return whether *value* is a job id ``scancel`` accepts.
+
+    This also allows the array notation ``squeue`` prints for pending job
+    arrays, for example ``12345_[1-5]``.
+    """
+    if not isinstance(value, str):
+        return False
+    candidate = value.strip()
+    return bool(
+        JOB_ID_PATTERN.fullmatch(candidate)
+        or JOB_ARRAY_ID_PATTERN.fullmatch(candidate)
+    )
+
+
+def build_slurm_cancel_command(
+    job_ids: Sequence[str],
+    signal: str | None = None,
+) -> list[str]:
+    """Build the ``scancel`` command for an explicit list of job ids."""
+    if isinstance(job_ids, str):
+        raise ValueError("job ids must be a sequence of strings, not a string.")
+
+    validated_ids: list[str] = []
+    for job_id in job_ids:
+        if not isinstance(job_id, str) or not job_id.strip():
+            raise ValueError("job id must be a non-empty string.")
+        candidate = job_id.strip()
+        if not is_cancellable_job_id(candidate):
+            raise ValueError(f"'{candidate}' is not a valid Slurm job id.")
+        if candidate not in validated_ids:
+            validated_ids.append(candidate)
+
+    if not validated_ids:
+        raise ValueError("At least one job id is required to cancel.")
+
+    command = ["scancel"]
+
+    if signal is not None:
+        signal_name = validate_name(signal, "signal").upper()
+        if not re.fullmatch(r"[A-Z0-9]+", signal_name):
+            raise ValueError("signal must be a name such as TERM, KILL, or USR1.")
+        command.append(f"--signal={signal_name}")
+
+    command.extend(validated_ids)
+    return command
 
 
 def build_info_nodes_command() -> list[str]:

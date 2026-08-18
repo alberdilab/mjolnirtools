@@ -2,6 +2,28 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.3.0 - 2026-08-18
+
+### Added
+
+- `mt slurm cancel` (and the `mt cancel` shortcut) cancels pending or running
+  jobs. Until now the tool could only inspect the queue, so stopping a job
+  meant falling back to `scancel` and its job ids. Targets can be one or more
+  job ids (`mt cancel 12345 12346`), a job array base id that expands to its
+  elements, the keywords `all`, `pending`, `running`, or `suspended`, or a job
+  name given as a substring or glob pattern (`mt cancel "assembly_*"`). The
+  selection can be narrowed further with `--name`, `--partition`, `--state`,
+  and `--user`.
+
+  The command resolves the selection with `squeue` first, prints the matching
+  jobs as a table, and asks for confirmation before running
+  `scancel <jobid> ...`, so a wide pattern cannot silently cancel more than
+  intended. `--dry-run` shows the selection and stops, `--yes` skips the
+  prompt, and `--signal NAME` sends a signal to running jobs instead of
+  cancelling them. Without a terminal the command refuses to prompt and asks
+  for `--yes`, and a job id that matches nothing in the queue is reported as a
+  warning instead of being passed to `scancel`.
+
 ## 1.2.3 - 2026-08-16
 
 ### Added

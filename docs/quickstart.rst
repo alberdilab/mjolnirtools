@@ -70,6 +70,28 @@ To focus on jobs that are waiting or running:
    $ mt slurm pending
    $ mt slurm running
 
+Cancel Jobs
+-----------
+
+Stop a job you no longer need. ``mt cancel`` shows the matching jobs and asks
+for confirmation before anything is cancelled:
+
+.. code-block:: console
+
+   $ mt cancel 12345
+
+You can also cancel several jobs at once, everything that is still waiting, or
+every job whose name matches a pattern:
+
+.. code-block:: console
+
+   $ mt cancel 12345 12346
+   $ mt cancel pending
+   $ mt cancel "assembly_*"
+
+Add ``--dry-run`` to see what a selection would cancel without cancelling it,
+and ``--yes`` to skip the confirmation prompt.
+
 Check Cluster Status
 --------------------
 

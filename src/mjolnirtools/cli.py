@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import sys
@@ -46,6 +47,25 @@ SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
         "  mt slurm pending",
         "  mt slurm running",
         "  mt slurm <jobid>",
+        "  mt slurm cancel <jobid> [<jobid> ...]",
+        "  mt slurm cancel all|pending|running",
+        "  mt slurm cancel <pattern>",
+    ],
+    "cancel": [
+        "Targets:",
+        "  mt cancel <jobid> [<jobid> ...]   Cancel specific jobs",
+        "  mt cancel all                     Cancel all your jobs",
+        "  mt cancel pending                 Cancel your pending jobs",
+        "  mt cancel running                 Cancel your running jobs",
+        "  mt cancel <pattern>               Cancel jobs by name",
+        "Options:",
+        "  --name <pattern>     Keep only jobs whose name matches",
+        "  --partition <name>   Keep only jobs on a partition",
+        "  --state <states>     Keep only jobs in these states",
+        "  --user <id>          Cancel jobs of another user (default: $USER)",
+        "  --signal <name>      Send a signal instead of cancelling",
+        "  --dry-run            Show what would be cancelled, cancel nothing",
+        "  --yes                Do not ask for confirmation",
     ],
     "permissions": [
         "Subcommands:",
@@ -138,6 +158,7 @@ SECTION_COLORS: list[tuple[str, str]] = [
 SHORTCUT_LINES = [
     "Shortcuts:",
     "  mt interactive <hours> = mt slurm interactive <hours>",
+    "  mt cancel <target> = mt slurm cancel <target>",
     "  mt node <name> = mt system node <name>",
     "  mt partition <name> = mt system partition <name>",
 ]
@@ -155,7 +176,8 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
         "Job monitoring",
         (
             "Monitor and manage your Slurm jobs on the HPC cluster. "
-            "Start interactive sessions or check job queues and status."
+            "Start interactive sessions, check job queues and status, "
+            "or cancel jobs you no longer need."
         ),
         [
             ("mt slurm interactive <hours>", "Start an interactive Slurm session"),
@@ -165,6 +187,8 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
             ("mt slurm pending", "List pending (waiting) jobs"),
             ("mt slurm running", "List currently running jobs"),
             ("mt slurm <jobid>", "Inspect a specific job by ID"),
+            ("mt slurm cancel <target>", "Cancel jobs by ID, name, or state"),
+            ("  * mt cancel <target>", "Shortcut"),
         ],
     ),
     (
@@ -314,14 +338,29 @@ SYSTEM_SHORTCUTS = {
     "node": ("system", "node"),
     "partition": ("system", "partition"),
 }
-SLURM_JOB_ID_PATTERN = re.compile(r"^\d+(?:[._][A-Za-z0-9_-]+)?$")
+TOPIC_SHORTCUTS = {
+    ("slurm", "cancel"): ("cancel",),
+}
+SLURM_JOB_ID_PATTERN = slurm.JOB_ID_PATTERN
+CANCEL_KEYWORDS = ("all", "pending", "running", "suspended")
+CANCEL_KEYWORD_STATES = {
+    "all": (),
+    "pending": ("PENDING",),
+    "running": ("RUNNING",),
+    "suspended": ("SUSPENDED",),
+}
+GLOB_CHARACTERS = "*?["
 
 
 def normalize_shortcuts(args: Sequence[str]) -> list[str]:
-    """Expand top-level convenience shortcuts into their topic commands."""
+    """Expand convenience shortcuts into their real commands."""
     normalized_args = list(args)
     if not normalized_args:
         return normalized_args
+
+    topic_replacement = TOPIC_SHORTCUTS.get(tuple(normalized_args[:2]))
+    if topic_replacement is not None:
+        return [*topic_replacement, *normalized_args[2:]]
 
     replacement = SYSTEM_SHORTCUTS.get(normalized_args[0])
     if replacement is None:
@@ -332,7 +371,7 @@ def normalize_shortcuts(args: Sequence[str]) -> list[str]:
 
 def is_slurm_job_id(value: str) -> bool:
     """Return whether *value* looks like a Slurm job or job-step id."""
-    return bool(SLURM_JOB_ID_PATTERN.fullmatch(value.strip()))
+    return slurm.is_job_id(value)
 
 
 def validate_memory(value: str) -> str:
@@ -850,7 +889,7 @@ def slurm_command(
             raise click.UsageError(
                 "Use one of: mt slurm interactive <hours>, mt slurm list, "
                 "mt slurm all, mt slurm pending, mt slurm running, "
-                "mt slurm <jobid>."
+                "mt slurm <jobid>, mt slurm cancel <target>."
             )
         command = slurm.build_slurm_job_command(target)
         title = target
@@ -864,6 +903,268 @@ def slurm_command(
         print_slurm_jobs_table(title, parse_slurm_jobs_output(output))
     else:
         print_slurm_accounting_table(title, parse_slurm_accounting_output(output))
+
+
+def matches_name_pattern(value: str, pattern: str) -> bool:
+    """Return whether *value* matches *pattern* as a glob or a substring."""
+    candidate = value.lower()
+    wanted = pattern.strip().lower()
+    if not wanted:
+        return False
+    if any(character in wanted for character in GLOB_CHARACTERS):
+        return fnmatch.fnmatch(candidate, wanted)
+    return wanted in candidate
+
+
+def job_matches_target(row: SlurmJobRow, target: str) -> bool:
+    """Return whether a queue row matches one ``mt cancel`` target.
+
+    Numeric targets match the job id exactly, plus the array elements and job
+    steps that belong to it, so ``12345`` also selects ``12345_3``. Anything
+    else is matched against the job name as a glob or a substring.
+    """
+    job_id, _partition, job_name = row[0], row[1], row[2]
+    candidate = target.strip()
+    if not candidate:
+        return False
+
+    if slurm.is_cancellable_job_id(candidate):
+        return (
+            job_id == candidate
+            or job_id.startswith(f"{candidate}_")
+            or job_id.startswith(f"{candidate}.")
+        )
+
+    return matches_name_pattern(job_name, candidate)
+
+
+def select_cancel_jobs(
+    rows: list[SlurmJobRow],
+    targets: Sequence[str],
+    name: str | None = None,
+    partition: str | None = None,
+) -> tuple[list[SlurmJobRow], list[str]]:
+    """Return the queue rows to cancel and the targets that matched nothing."""
+    candidates = list(rows)
+
+    if partition is not None:
+        wanted_partition = partition.strip().lower()
+        candidates = [row for row in candidates if row[1].lower() == wanted_partition]
+
+    if name is not None:
+        candidates = [row for row in candidates if matches_name_pattern(row[2], name)]
+
+    explicit_targets = [
+        target
+        for target in targets
+        if target.strip() and target.strip().lower() not in CANCEL_KEYWORDS
+    ]
+    if not explicit_targets:
+        return candidates, []
+
+    selected: list[SlurmJobRow] = []
+    selected_ids: set[str] = set()
+    unmatched: list[str] = []
+
+    for target in explicit_targets:
+        matches = [row for row in candidates if job_matches_target(row, target)]
+        if not matches:
+            unmatched.append(target.strip())
+            continue
+        for row in matches:
+            if row[0] not in selected_ids:
+                selected_ids.add(row[0])
+                selected.append(row)
+
+    return selected, unmatched
+
+
+def collect_cancel_states(
+    targets: Sequence[str], state: str | None = None
+) -> list[str]:
+    """Return the Slurm states implied by cancel keywords and ``--state``."""
+    states: list[str] = []
+
+    for target in targets:
+        for keyword_state in CANCEL_KEYWORD_STATES.get(target.strip().lower(), ()):
+            if keyword_state not in states:
+                states.append(keyword_state)
+
+    if state is not None:
+        for value in state.split(","):
+            keyword_state = value.strip().upper()
+            if not keyword_state:
+                continue
+            if keyword_state not in states:
+                states.append(keyword_state)
+
+    return states
+
+
+@app.command(
+    name="cancel",
+    add_help_option=False,
+    rich_help_panel="Job monitoring",
+    help="Cancel pending or running Slurm jobs.",
+)
+def cancel_command(
+    targets: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help=(
+                "Job ids to cancel, a job name pattern, or one of: "
+                "all, pending, running, suspended."
+            ),
+            show_default=False,
+        ),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            "-n",
+            callback=validate_optional_name,
+            help="Cancel only jobs whose name matches this glob or substring.",
+            show_default=False,
+            rich_help_panel="Job selection",
+        ),
+    ] = None,
+    partition: Annotated[
+        str | None,
+        typer.Option(
+            "--partition",
+            "-p",
+            callback=validate_optional_name,
+            help="Cancel only jobs on this partition.",
+            show_default=False,
+            rich_help_panel="Job selection",
+        ),
+    ] = None,
+    state: Annotated[
+        str | None,
+        typer.Option(
+            "--state",
+            callback=validate_optional_name,
+            help="Cancel only jobs in these states, for example PENDING,RUNNING.",
+            show_default=False,
+            rich_help_panel="Job selection",
+        ),
+    ] = None,
+    user: Annotated[
+        str | None,
+        typer.Option(
+            "--user",
+            "-u",
+            callback=validate_optional_name,
+            help="Cancel jobs of another user. Defaults to your own jobs.",
+            show_default=False,
+            rich_help_panel="Job selection",
+        ),
+    ] = None,
+    signal: Annotated[
+        str | None,
+        typer.Option(
+            "--signal",
+            callback=validate_optional_name,
+            help=(
+                "Send this signal to running jobs instead of cancelling them, "
+                "for example TERM or USR1."
+            ),
+            show_default=False,
+            rich_help_panel="Cancellation",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Show the jobs that would be cancelled and stop.",
+            rich_help_panel="Cancellation",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Cancel without asking for confirmation.",
+            rich_help_panel="Cancellation",
+        ),
+    ] = False,
+) -> None:
+    """Cancel Slurm jobs selected by id, name, state, or partition."""
+    requested_targets = [target.strip() for target in (targets or []) if target.strip()]
+
+    if not requested_targets and name is None and partition is None and state is None:
+        raise click.UsageError(
+            "mt cancel requires job ids, a name pattern, or one of: "
+            "all, pending, running. For example: mt cancel 12345, "
+            "mt cancel pending, or mt cancel 'assembly*'."
+        )
+
+    states = collect_cancel_states(requested_targets, state)
+    lookup_command = slurm.build_slurm_list_command(
+        user=user,
+        states=states or None,
+    )
+    exit_code, output = slurm.capture_command_output(lookup_command)
+    if exit_code != 0:
+        raise typer.Exit(exit_code)
+
+    selected, unmatched = select_cancel_jobs(
+        parse_slurm_jobs_output(output),
+        requested_targets,
+        name=name,
+        partition=partition,
+    )
+
+    console = Console()
+    for target in unmatched:
+        console.print(
+            f"[yellow]No queued job matches '{target}'.[/yellow] "
+            "[dim]It may have finished already; try mt slurm list.[/dim]"
+        )
+
+    if not selected:
+        console.print("No matching jobs to cancel.")
+        raise typer.Exit(1 if unmatched else 0)
+
+    job_ids = [row[0] for row in selected]
+    if dry_run:
+        table_title = "Jobs That Would Be Signalled" if signal else "Jobs That Would Be Cancelled"
+    else:
+        table_title = "Jobs To Signal" if signal else "Jobs To Cancel"
+    print_slurm_jobs_table(table_title, selected)
+
+    if dry_run:
+        console.print(
+            f"[dim]Dry run: {len(job_ids)} job(s) selected. Nothing was cancelled.[/dim]"
+        )
+        raise typer.Exit(0)
+
+    if not yes:
+        if not sys.stdin.isatty():
+            console.print(
+                "[bold red]Error:[/bold red] mt cancel needs a confirmation but the "
+                "input is not an interactive terminal."
+            )
+            console.print("  [dim]Rerun with --yes to cancel without asking.[/dim]")
+            raise typer.Exit(1)
+        action = "signal" if signal is not None else "cancel"
+        if not typer.confirm(f"{action.capitalize()} {len(job_ids)} job(s)?"):
+            console.print("No jobs were cancelled.")
+            raise typer.Exit(0)
+
+    command = slurm.build_slurm_cancel_command(job_ids, signal=signal)
+    cancel_exit_code = slurm.run_command(command)
+    if cancel_exit_code == 0:
+        if signal is not None:
+            console.print(
+                f"[green]Sent {signal.strip().upper()} to {len(job_ids)} job(s).[/green]"
+            )
+        else:
+            console.print(f"[green]Cancelled {len(job_ids)} job(s).[/green]")
+    raise typer.Exit(cancel_exit_code)
 
 
 @app.command(
