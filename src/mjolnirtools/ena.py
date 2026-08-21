@@ -70,6 +70,9 @@ SUBMISSION_CONTEXT_HELP = {
     ),
 }
 BASE_SAMPLE_COLUMNS = ("sample_alias", "sample_title", "taxon_id", "scientific_name")
+# Registering hundreds of samples in one XML keeps the ENA drop-box busy for
+# minutes, so the read timeout has to be far more generous than a normal call.
+SAMPLE_SUBMIT_TIMEOUT_SECONDS = 900
 PROJECT_TITLE_MIN_LENGTH = 20
 PROJECT_DESCRIPTION_MIN_LENGTH = 20
 COMMON_CHECKLISTS = (
@@ -863,7 +866,7 @@ def submit_sample_registration(
     sample_xml: Path,
     receipt_xml: Path,
     test_service: bool,
-    timeout: int = 60,
+    timeout: int = SAMPLE_SUBMIT_TIMEOUT_SECONDS,
 ) -> bool:
     """Submit sample XML to ENA Webin REST API. Returns True on success."""
     submit_url = WEBIN_TEST_SUBMIT_URL if test_service else WEBIN_PROD_SUBMIT_URL
@@ -1512,6 +1515,62 @@ def _review_sample_grouping(
             grouping = _edit_sample_mapping(console, grouping, data_files, source, mapping_path)
 
 
+def _submit_sample_metadata_interactive(
+    *,
+    console: Console,
+    credentials: config_module.EnaCredentials,
+    submission_xml: Path,
+    sample_xml: Path,
+    receipt_xml: Path,
+    test_service: bool,
+    service_label: str,
+) -> bool:
+    """Submit sample metadata, offering a retry when the network call fails.
+
+    A dropped or slow connection here would otherwise abort the whole wizard and
+    discard the workspace, study selection, and manifests the user just
+    reviewed, so transient network failures are retried in place.
+    """
+    while True:
+        console.print(f"  [bold]Submitting sample metadata to ENA {service_label}...[/bold]")
+        try:
+            submitted = submit_sample_registration(
+                credentials=credentials,
+                submission_xml=submission_xml,
+                sample_xml=sample_xml,
+                receipt_xml=receipt_xml,
+                test_service=test_service,
+            )
+        except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+            detail = errors_module.describe_error(exc)
+            errors_module.print_user_error(
+                console,
+                errors_module.UserError(
+                    f"Sample metadata submission to ENA {service_label} did not complete. {detail.message}",
+                    detail.hints,
+                ),
+                indent="  ",
+            )
+            console.print(
+                "  [dim]No receipt was returned. If the submission did reach ENA, a retry "
+                "reports the sample aliases as already registered.[/dim]"
+            )
+            if typer.confirm("  Retry the sample metadata submission?", default=True):
+                console.print()
+                continue
+            console.print("[bold red]Error:[/bold red] Sample metadata submission cancelled.")
+            return False
+
+        if not submitted:
+            console.print(
+                f"  [bold red]Error:[/bold red] Sample metadata submission to {service_label} failed.\n"
+                f"  Receipt: {receipt_xml}"
+            )
+            return False
+        console.print("  [green]Sample metadata submitted.[/green]")
+        return True
+
+
 def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
     """Run the ENA submission wizard, reporting filesystem problems as plain messages."""
     console = Console()
@@ -1822,21 +1881,16 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
         # Submit sample metadata to test service
         test_receipt_xml = workspace / "sample-receipt-test.xml"
         console.print()
-        console.print("  [bold]Submitting sample metadata to ENA test service...[/bold]")
-        metadata_ok = submit_sample_registration(
+        if not _submit_sample_metadata_interactive(
+            console=console,
             credentials=credentials,
             submission_xml=submission_xml,
             sample_xml=sample_xml,
             receipt_xml=test_receipt_xml,
             test_service=True,
-        )
-        if not metadata_ok:
-            console.print(
-                f"  [bold red]Error:[/bold red] Sample metadata submission to test service failed.\n"
-                f"  Receipt: {test_receipt_xml}"
-            )
+            service_label="test service",
+        ):
             return 1
-        console.print("  [green]Sample metadata submitted.[/green]")
 
         # Submit data files to test service with per-sample progress
         console.print()
@@ -1890,21 +1944,16 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
         # Submit sample metadata to production
         prod_receipt_xml = workspace / "sample-receipt-production.xml"
         console.print()
-        console.print("  [bold]Submitting sample metadata to ENA production...[/bold]")
-        prod_metadata_ok = submit_sample_registration(
+        if not _submit_sample_metadata_interactive(
+            console=console,
             credentials=credentials,
             submission_xml=submission_xml,
             sample_xml=sample_xml,
             receipt_xml=prod_receipt_xml,
             test_service=False,
-        )
-        if not prod_metadata_ok:
-            console.print(
-                f"  [bold red]Error:[/bold red] Sample metadata submission to production failed.\n"
-                f"  Receipt: {prod_receipt_xml}"
-            )
+            service_label="production",
+        ):
             return 1
-        console.print("  [green]Sample metadata submitted.[/green]")
 
         # Submit data files to production with per-sample progress
         console.print()
@@ -1933,21 +1982,16 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
     else:
         # Direct production submission (no test)
         console.print()
-        console.print("  [bold]Submitting sample metadata to ENA...[/bold]")
-        metadata_ok = submit_sample_registration(
+        if not _submit_sample_metadata_interactive(
+            console=console,
             credentials=credentials,
             submission_xml=submission_xml,
             sample_xml=sample_xml,
             receipt_xml=receipt_xml,
             test_service=False,
-        )
-        if not metadata_ok:
-            console.print(
-                f"  [bold red]Error:[/bold red] Sample metadata submission failed.\n"
-                f"  Receipt: {receipt_xml}"
-            )
+            service_label="production",
+        ):
             return 1
-        console.print("  [green]Sample metadata submitted.[/green]")
 
         console.print()
         data_ok = _run_sample_submissions_with_progress(

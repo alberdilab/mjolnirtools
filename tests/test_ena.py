@@ -1202,6 +1202,70 @@ class TransferWizardErrorHandlingTests(unittest.TestCase):
             self.assertIsNone(workspace)
             self.assertIn("Could not set up a workspace directory", buffer.getvalue())
 
+    def _sample_metadata_args(self, base: Path) -> dict:
+        submission_xml = base / "submission.xml"
+        sample_xml = base / "sample.xml"
+        submission_xml.write_text("<SUBMISSION />")
+        sample_xml.write_text("<SAMPLE_SET />")
+        return {
+            "credentials": config_module.EnaCredentials("Webin-1", "secret", base / "credentials"),
+            "submission_xml": submission_xml,
+            "sample_xml": sample_xml,
+            "receipt_xml": base / "receipt.xml",
+            "test_service": True,
+            "service_label": "test service",
+        }
+
+    def test_sample_metadata_submission_retries_after_a_timeout(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            with mock.patch(
+                "mjolnirtools.ena.submit_sample_registration",
+                side_effect=[TimeoutError("timed out"), True],
+            ) as submit:
+                with mock.patch("mjolnirtools.ena.typer.confirm", return_value=True):
+                    submitted = ena._submit_sample_metadata_interactive(
+                        console=console, **self._sample_metadata_args(Path(tmpdir))
+                    )
+
+            self.assertTrue(submitted)
+            self.assertEqual(submit.call_count, 2)
+            output = buffer.getvalue()
+            self.assertIn("timed out", output)
+            self.assertIn("Sample metadata submitted", output)
+
+    def test_sample_metadata_submission_stops_when_retry_is_declined(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            with mock.patch(
+                "mjolnirtools.ena.submit_sample_registration",
+                side_effect=TimeoutError("timed out"),
+            ) as submit:
+                with mock.patch("mjolnirtools.ena.typer.confirm", return_value=False):
+                    submitted = ena._submit_sample_metadata_interactive(
+                        console=console, **self._sample_metadata_args(Path(tmpdir))
+                    )
+
+            self.assertFalse(submitted)
+            self.assertEqual(submit.call_count, 1)
+            self.assertIn("cancelled", buffer.getvalue().lower())
+
+    def test_sample_metadata_submission_does_not_retry_a_rejected_receipt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            with mock.patch(
+                "mjolnirtools.ena.submit_sample_registration", return_value=False
+            ) as submit:
+                with mock.patch("mjolnirtools.ena.typer.confirm", return_value=True) as confirm:
+                    submitted = ena._submit_sample_metadata_interactive(
+                        console=console, **self._sample_metadata_args(Path(tmpdir))
+                    )
+
+            self.assertFalse(submitted)
+            self.assertEqual(submit.call_count, 1)
+            confirm.assert_not_called()
+            self.assertIn("Receipt", buffer.getvalue())
+
     def test_wizard_converts_filesystem_errors_into_messages(self):
         buffer = StringIO()
         error = PermissionError(13, "Permission denied", "/maps/projects/demo/run")

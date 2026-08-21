@@ -2,6 +2,20 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.3.2 - 2026-08-21
+
+### Fixed
+
+- `mt transfer ena` no longer aborts the whole wizard when the sample metadata
+  submission hits a network timeout. Registering a few hundred samples keeps
+  the ENA drop-box busy for minutes, and the 60-second read timeout turned that
+  into `Error: The operation timed out.` followed by the wizard exiting, which
+  discarded the workspace, the study selection, and the manifests the user had
+  just reviewed run by run. The timeout is now 15 minutes, and a dropped or
+  slow connection offers a retry in place instead of unwinding the session. A
+  receipt that ENA actually rejects still stops the wizard, since retrying it
+  would fail the same way.
+
 ## 1.3.1 - 2026-08-18
 
 ### Fixed
