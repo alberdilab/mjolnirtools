@@ -110,6 +110,7 @@ SUBCOMMAND_TREE_LINES: dict[str, list[str]] = {
         "Subcommands:",
         "  mt transfer erda <path> <erda-dest>",
         "  mt transfer ena [path]",
+        "  mt transfer ena --resume <workspace>",
     ],
     "conda": [
         "Subcommands:",
@@ -230,6 +231,7 @@ SECTION_INFO: list[tuple[str, str, list[tuple[str, str]]]] = [
             ("mt move erda <path> <erda-dest>", "Move a local path to ERDA via rsync (deletes source)"),
             ("mt transfer erda <path> <erda-dest>", "Upload a local path to ERDA via rsync (keeps source)"),
             ("mt transfer ena [path]", "Submit data to ENA Webin (auto-discovers sequence files if no path given)"),
+            ("mt transfer ena --resume <workspace>", "Continue a submission prepared by an earlier wizard run"),
         ],
     ),
     (
@@ -1784,12 +1786,22 @@ def transfer_command(
             help="Delete the source after a successful transfer.",
         ),
     ] = False,
+    resume: Annotated[
+        str | None,
+        typer.Option(
+            "--resume",
+            help="For 'ena': continue the submission prepared in this workspace directory.",
+            show_default=False,
+        ),
+    ] = None,
 ) -> None:
     """Upload a local path to ERDA or ENA in a background screen session."""
     keep_original = not delete
     console = Console()
 
     if destination == "erda":
+        if resume is not None:
+            raise click.UsageError("--resume is only supported for mt transfer ena.")
         if source is None:
             raise click.UsageError("mt transfer erda requires a source path.")
         if erda_dest is None:
@@ -1831,7 +1843,7 @@ def transfer_command(
         if not config_module._config_has_ena():
             _exit_with_missing_config("ENA", "mt config ena")
 
-        raise typer.Exit(ena.run_transfer_wizard(source, keep_original))
+        raise typer.Exit(ena.run_transfer_wizard(source, keep_original, resume=resume))
 
     else:
         raise click.UsageError(

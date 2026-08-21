@@ -143,6 +143,7 @@ Usage:
 .. code-block:: console
 
    $ mt transfer ena <path> [--delete]
+   $ mt transfer ena --resume <workspace>
 
 Arguments:
 
@@ -154,6 +155,10 @@ Options:
 ``--delete``
    Delete the source path only after ENA metadata submission and Webin-CLI data
    submission both complete successfully. By default the source is kept.
+
+``--resume <workspace>``
+   Continue the submission prepared in an existing workspace instead of
+   preparing a new one. See `Resuming a submission`_.
 
 The wizard prints a boxed explanation before each prompt so users know what the
 value controls and whether ENA expects a pre-registered object, a local file,
@@ -218,9 +223,32 @@ the production script is not started unless the test script exits successfully.
 Output from the submission scripts is appended to ``submit-ena.log`` in the
 workspace.
 
+Resuming a submission
+~~~~~~~~~~~~~~~~~~~~~
+
+Preparing a submission takes far longer than sending it: the sample grouping,
+the checklist, the completed metadata TSV, and one manifest per run are all
+produced before anything reaches ENA. The wizard therefore records what it
+prepared in ``.mt-ena-submission.json`` inside the workspace, together with
+every stage ENA has already accepted.
+
+If a run stops — a failed submission, a lost connection, manifests that still
+need editing — continue it with:
+
+.. code-block:: console
+
+   $ mt transfer ena --resume /path/to/mt-ena-20260821-050728
+
+The wizard shows what the workspace holds, asks for confirmation, and continues
+from the first stage ENA has not accepted. Stages that already succeeded are
+skipped, so samples that ENA has registered are never resubmitted. Pointing a
+new ``mt transfer ena`` run at a workspace that holds a prepared submission
+offers the same choice.
+
 Examples:
 
 .. code-block:: console
 
    $ mt transfer ena /projects/alberdilab/people/username/run42
+   $ mt transfer ena --resume mt-ena-20260821-050728
    $ WEBIN_CLI_JAR=$HOME/bin/webin-cli.jar mt transfer ena reads/

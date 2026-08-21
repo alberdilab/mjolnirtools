@@ -825,7 +825,7 @@ class CliTests(unittest.TestCase):
                 exit_code = cli.main(["transfer", "ena", "reads"])
 
         self.assertEqual(exit_code, 0)
-        wizard.assert_called_once_with("reads", True)
+        wizard.assert_called_once_with("reads", True, resume=None)
 
     def test_transfer_ena_delete_passes_keep_original_false(self):
         with mock.patch("mjolnirtools.cli.config_module._config_has_ena", return_value=True):
@@ -833,7 +833,7 @@ class CliTests(unittest.TestCase):
                 exit_code = cli.main(["transfer", "ena", "reads", "--delete"])
 
         self.assertEqual(exit_code, 0)
-        wizard.assert_called_once_with("reads", False)
+        wizard.assert_called_once_with("reads", False, resume=None)
 
     def test_system_resources_prints_usage_progress_rows(self):
         scontrol_output = (

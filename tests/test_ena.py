@@ -1202,6 +1202,108 @@ class TransferWizardErrorHandlingTests(unittest.TestCase):
             self.assertIsNone(workspace)
             self.assertIn("Could not set up a workspace directory", buffer.getvalue())
 
+    def test_manifest_report_shows_a_count_and_one_example(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            console, buffer = self._console()
+            manifests = []
+            for index in range(3):
+                run_name = f"AF{index}_223JWCLT4_L2"
+                path = workspace / f"reads_{run_name}.manifest.txt"
+                path.write_text(f"STUDY\tPRJEB1\nNAME\t{run_name}\nFASTQ\t{run_name}_1.fq.gz\n")
+                run = ena.samples_module.RunGroup(
+                    run_name,
+                    (Path(f"{run_name}_1.fq.gz"), Path(f"{run_name}_2.fq.gz")),
+                    "paired",
+                )
+                manifests.append((f"AF{index}", run, path))
+
+            ena._report_manifests_written(console, manifests, workspace)
+
+            output = buffer.getvalue()
+            self.assertIn("3 manifest(s) written covering 6 file(s)", output)
+            self.assertIn(str(workspace), output)
+            # Only the first manifest is shown; the other paths stay out of the way.
+            self.assertIn("reads_AF0_223JWCLT4_L2.manifest.txt", output)
+            self.assertNotIn("reads_AF1_223JWCLT4_L2.manifest.txt", output)
+            self.assertNotIn("reads_AF2_223JWCLT4_L2.manifest.txt", output)
+            self.assertIn("STUDY", output)
+            self.assertIn("AF0_223JWCLT4_L2_1.fq.gz", output)
+
+    def test_manifest_report_truncates_a_long_example(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            console, buffer = self._console()
+            path = workspace / "genome_AF0.manifest.txt"
+            path.write_text("\n".join(f"FIELD{n}\tvalue" for n in range(30)))
+            run = ena.samples_module.RunGroup("AF0", (Path("AF0.fa.gz"),), "single")
+
+            ena._report_manifests_written(console, [("AF0", run, path)], workspace, preview_lines=5)
+
+            output = buffer.getvalue()
+            self.assertIn("FIELD4", output)
+            self.assertNotIn("FIELD5", output)
+            self.assertIn("and 25 more line(s)", output)
+
+    def test_existing_metadata_tsv_is_kept_by_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            template = Path(tmpdir) / "samples_ERC000011.tsv"
+            template.write_text("#checklist_accession\tERC000011\nsample_alias\nAC79\n")
+            checklist = ena.Checklist("ERC000011", "ENA default sample checklist", ())
+
+            with mock.patch("mjolnirtools.ena.typer.confirm", return_value=True) as confirm:
+                ena._write_metadata_template_interactive(
+                    console,
+                    checklist,
+                    template,
+                    include_optional=False,
+                    sample_names=["AC79"],
+                )
+
+            confirm.assert_called_once()
+            self.assertIn("AC79", template.read_text())
+            self.assertIn("Keeping the existing metadata TSV", buffer.getvalue())
+
+    def test_existing_metadata_tsv_is_replaced_on_request(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, _ = self._console()
+            template = Path(tmpdir) / "samples_ERC000011.tsv"
+            template.write_text("stale\n")
+            checklist = ena.Checklist("ERC000011", "ENA default sample checklist", ())
+
+            with mock.patch("mjolnirtools.ena.typer.confirm", return_value=False):
+                ena._write_metadata_template_interactive(
+                    console,
+                    checklist,
+                    template,
+                    include_optional=False,
+                    sample_names=["AC79"],
+                )
+
+            content = template.read_text()
+            self.assertNotIn("stale", content)
+            self.assertIn("ERC000011", content)
+
+    def test_metadata_template_is_written_without_prompting_when_absent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            template = Path(tmpdir) / "samples_ERC000011.tsv"
+            checklist = ena.Checklist("ERC000011", "ENA default sample checklist", ())
+
+            with mock.patch("mjolnirtools.ena.typer.confirm") as confirm:
+                ena._write_metadata_template_interactive(
+                    console,
+                    checklist,
+                    template,
+                    include_optional=False,
+                    sample_names=["AC79"],
+                )
+
+            confirm.assert_not_called()
+            self.assertTrue(template.exists())
+            self.assertIn("Metadata template written", buffer.getvalue())
+
     def _sample_metadata_args(self, base: Path) -> dict:
         submission_xml = base / "submission.xml"
         sample_xml = base / "sample.xml"
@@ -1265,6 +1367,257 @@ class TransferWizardErrorHandlingTests(unittest.TestCase):
             self.assertEqual(submit.call_count, 1)
             confirm.assert_not_called()
             self.assertIn("Receipt", buffer.getvalue())
+
+    def test_sample_metadata_failure_reports_the_receipt_messages(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            args = self._sample_metadata_args(Path(tmpdir))
+            args["receipt_xml"].write_text(
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<RECEIPT success="false">'
+                '<SAMPLE alias="AC79" status="PRIVATE"/>'
+                "<MESSAGES>"
+                "<ERROR>In sample, alias:&quot;AC79&quot;. "
+                "The object being added already exists.</ERROR>"
+                "<INFO>This submission is a TEST submission.</INFO>"
+                "</MESSAGES></RECEIPT>"
+            )
+            with mock.patch("mjolnirtools.ena.submit_sample_registration", return_value=False):
+                submitted = ena._submit_sample_metadata_interactive(console=console, **args)
+
+            self.assertFalse(submitted)
+            output = buffer.getvalue()
+            self.assertIn("ERROR: In sample", output)
+            self.assertIn("already exists", output)
+            self.assertIn("INFO: This submission is a TEST submission.", output)
+
+    def _biosamples_receipt(self) -> str:
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<RECEIPT success="false">'
+            '<SAMPLE alias="AC79" status="PRIVATE"/>'
+            "<MESSAGES>"
+            "<ERROR>Failed to submit samples to BioSamples</ERROR>"
+            "<ERROR>No new BioSample was created for sample with alias AC79</ERROR>"
+            "</MESSAGES></RECEIPT>"
+        )
+
+    def test_sample_metadata_submission_retries_a_biosamples_outage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            args = self._sample_metadata_args(Path(tmpdir))
+            args["receipt_xml"].write_text(self._biosamples_receipt())
+
+            def submit(**kwargs):
+                if submit.calls == 0:
+                    submit.calls += 1
+                    return False
+                return True
+
+            submit.calls = 0
+            with mock.patch("mjolnirtools.ena.submit_sample_registration", side_effect=submit):
+                with mock.patch("mjolnirtools.ena.typer.confirm", return_value=True) as confirm:
+                    submitted = ena._submit_sample_metadata_interactive(console=console, **args)
+
+            self.assertTrue(submitted)
+            confirm.assert_called_once()
+            self.assertIn("Failed to submit samples to BioSamples", buffer.getvalue())
+
+    def test_sample_metadata_submission_does_not_retry_a_metadata_rejection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, _ = self._console()
+            args = self._sample_metadata_args(Path(tmpdir))
+            args["receipt_xml"].write_text(
+                '<RECEIPT success="false"><MESSAGES>'
+                "<ERROR>Failed to submit samples to BioSamples</ERROR>"
+                '<ERROR>In sample, alias:"AC79". Invalid collection date.</ERROR>'
+                "</MESSAGES></RECEIPT>"
+            )
+            with mock.patch("mjolnirtools.ena.submit_sample_registration", return_value=False):
+                with mock.patch("mjolnirtools.ena.typer.confirm", return_value=True) as confirm:
+                    submitted = ena._submit_sample_metadata_interactive(console=console, **args)
+
+            self.assertFalse(submitted)
+            confirm.assert_not_called()
+
+    def test_receipt_messages_are_empty_when_the_receipt_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(ena._read_receipt_messages(Path(tmpdir) / "absent.xml"), [])
+            self.assertEqual(ena.parse_receipt_messages("not xml at all"), [])
+
+    def _prepared_state(self, workspace: Path) -> "ena.SubmissionState":
+        workspace.mkdir(parents=True, exist_ok=True)
+        source = workspace / "data"
+        source.mkdir(exist_ok=True)
+        reads = source / "AC79_1.fq.gz"
+        reads.write_text("")
+        manifest = workspace / "reads_AC79.manifest.txt"
+        manifest.write_text("STUDY\tPRJEB1\nSAMPLE\tAC79\n")
+        sample_xml = workspace / "sample.xml"
+        sample_xml.write_text("<SAMPLE_SET />")
+        submission_xml = workspace / "submission.xml"
+        submission_xml.write_text("<SUBMISSION />")
+        return ena.SubmissionState(
+            workspace=workspace,
+            source_path=source,
+            context="reads",
+            test_first=True,
+            checklist_accession="ERC000011",
+            metadata_tsv=workspace / "samples_ERC000011.tsv",
+            sample_xml=sample_xml,
+            submission_xml=submission_xml,
+            manifests=[("AC79", ena.samples_module.RunGroup("AC79", (reads,), "single"), manifest)],
+            webin_user="Webin-1",
+            created="2026-08-21 05:07",
+        )
+
+    def test_submission_state_round_trips_through_the_workspace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = self._prepared_state(Path(tmpdir) / "ws")
+            state.mark_done(ena.STAGE_TEST_SAMPLES)
+            state.set_production_study("PRJEB99")
+
+            loaded = ena.load_submission_state(state.workspace)
+
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.context, "reads")
+            self.assertEqual(loaded.webin_user, "Webin-1")
+            self.assertEqual(loaded.production_study, "PRJEB99")
+            self.assertEqual(loaded.completed_stages, [ena.STAGE_TEST_SAMPLES])
+            self.assertEqual(loaded.manifests[0][0], "AC79")
+            self.assertEqual(loaded.manifests[0][1].pairing, "single")
+            self.assertEqual(loaded.manifest_paths, state.manifest_paths)
+
+    def test_submission_state_is_absent_for_an_unprepared_workspace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            self.assertIsNone(ena.load_submission_state(workspace))
+
+            (workspace / ena.SUBMISSION_STATE_FILENAME).write_text("{ not json")
+            self.assertIsNone(ena.load_submission_state(workspace))
+
+            (workspace / ena.SUBMISSION_STATE_FILENAME).write_text('{"version": 999}')
+            self.assertIsNone(ena.load_submission_state(workspace))
+
+    @contextlib.contextmanager
+    def _submission_phase_mocks(self, *, confirm=False):
+        with mock.patch("mjolnirtools.ena._ensure_webin_cli_jar", return_value=Path("webin.jar")):
+            with mock.patch("mjolnirtools.ena.shutil.which", return_value="/usr/bin/java"):
+                with mock.patch("mjolnirtools.ena.typer.confirm", return_value=confirm):
+                    with mock.patch(
+                        "mjolnirtools.ena._submit_sample_metadata_interactive", return_value=True
+                    ) as samples:
+                        with mock.patch(
+                            "mjolnirtools.ena._run_sample_submissions_with_progress",
+                            return_value=True,
+                        ) as data:
+                            yield samples, data
+
+    def test_submission_phase_skips_stages_ena_already_accepted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            state = self._prepared_state(Path(tmpdir) / "ws")
+            state.mark_done(ena.STAGE_TEST_SAMPLES)
+
+            with self._submission_phase_mocks() as (samples, data):
+                exit_code = ena._run_submission_phase(
+                    console,
+                    state=state,
+                    credentials=config_module.EnaCredentials(
+                        "Webin-1", "secret", Path(tmpdir) / "creds"
+                    ),
+                    keep_original=True,
+                )
+
+            self.assertEqual(exit_code, 0)
+            samples.assert_not_called()
+            data.assert_called_once()
+            self.assertIn("Already done", buffer.getvalue())
+            self.assertEqual(
+                ena.load_submission_state(state.workspace).completed_stages,
+                [ena.STAGE_TEST_SAMPLES, ena.STAGE_TEST_DATA],
+            )
+
+    def test_submission_phase_records_each_accepted_stage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, _ = self._console()
+            state = self._prepared_state(Path(tmpdir) / "ws")
+
+            with self._submission_phase_mocks() as (samples, data):
+                exit_code = ena._run_submission_phase(
+                    console,
+                    state=state,
+                    credentials=config_module.EnaCredentials(
+                        "Webin-1", "secret", Path(tmpdir) / "creds"
+                    ),
+                    keep_original=True,
+                )
+
+            self.assertEqual(exit_code, 0)
+            samples.assert_called_once()
+            data.assert_called_once()
+            self.assertEqual(
+                state.completed_stages, [ena.STAGE_TEST_SAMPLES, ena.STAGE_TEST_DATA]
+            )
+            self.assertTrue(state.source_path.exists())
+
+    def test_resume_reports_a_workspace_without_a_prepared_submission(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            buffer = StringIO()
+            with contextlib.redirect_stdout(buffer):
+                exit_code = ena.run_transfer_wizard(None, True, resume=tmpdir)
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("No resumable submission", buffer.getvalue())
+
+    def test_resume_reports_a_completed_submission(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = self._prepared_state(Path(tmpdir) / "ws")
+            state.mark_done(ena.STAGE_COMPLETE)
+
+            buffer = StringIO()
+            with contextlib.redirect_stdout(buffer):
+                exit_code = ena.run_transfer_wizard(None, True, resume=str(state.workspace))
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("already complete", buffer.getvalue())
+
+    def test_resume_stops_when_prepared_files_are_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            state = self._prepared_state(Path(tmpdir) / "ws")
+            state.sample_xml.unlink()
+
+            outcome = ena._resume_from_state(console, state, True)
+
+            self.assertEqual(outcome, 1)
+            self.assertIn("missing from the workspace", buffer.getvalue())
+
+    def test_declining_a_resume_lets_the_wizard_start_over(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            state = self._prepared_state(Path(tmpdir) / "ws")
+
+            with mock.patch("mjolnirtools.ena.typer.confirm", return_value=False):
+                outcome = ena._resume_from_state(console, state, True)
+
+            self.assertIsNone(outcome)
+            self.assertIn("1 run(s)", buffer.getvalue())
+
+    def test_resume_uses_the_webin_user_that_prepared_the_submission(self):
+        credentials = [
+            config_module.EnaCredentials("Webin-1", "a", Path("/tmp/a")),
+            config_module.EnaCredentials("Webin-2", "b", Path("/tmp/b")),
+        ]
+        console, _ = self._console()
+        with mock.patch(
+            "mjolnirtools.ena.config_module._list_ena_credentials", return_value=credentials
+        ):
+            with mock.patch("mjolnirtools.ena.typer.prompt") as prompt:
+                selected = ena._select_webin_credentials(console, preferred_username="Webin-2")
+
+        prompt.assert_not_called()
+        self.assertEqual(selected.username, "Webin-2")
 
     def test_wizard_converts_filesystem_errors_into_messages(self):
         buffer = StringIO()

@@ -16,7 +16,7 @@ import uuid
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -313,6 +313,139 @@ class Checklist:
     accession: str
     label: str
     fields: tuple[ChecklistField, ...]
+
+
+SUBMISSION_STATE_FILENAME = ".mt-ena-submission.json"
+SUBMISSION_STATE_VERSION = 1
+
+STAGE_TEST_SAMPLES = "test-samples"
+STAGE_TEST_DATA = "test-data"
+STAGE_PRODUCTION_SAMPLES = "production-samples"
+STAGE_PRODUCTION_DATA = "production-data"
+STAGE_COMPLETE = "complete"
+
+STAGE_LABELS = {
+    STAGE_TEST_SAMPLES: "sample metadata accepted by the test service",
+    STAGE_TEST_DATA: "data files submitted to the test service",
+    STAGE_PRODUCTION_SAMPLES: "sample metadata accepted by production",
+    STAGE_PRODUCTION_DATA: "data files submitted to production",
+    STAGE_COMPLETE: "submission complete",
+}
+
+
+@dataclass
+class SubmissionState:
+    """A prepared submission in a workspace, saved so a stopped run can resume.
+
+    Preparing a submission — grouping runs, filling the metadata TSV, writing one
+    manifest per run — costs far more of the user's time than the submission
+    itself. A submission that fails would otherwise send them back through every
+    prompt, so the workspace records what was prepared and which stages ENA has
+    already accepted.
+    """
+
+    workspace: Path
+    source_path: Path
+    context: str
+    test_first: bool
+    checklist_accession: str
+    metadata_tsv: Path
+    sample_xml: Path
+    submission_xml: Path
+    manifests: list[tuple[str, samples_module.RunGroup, Path]]
+    webin_user: str
+    created: str = ""
+    production_study: str | None = None
+    completed_stages: list[str] = field(default_factory=list)
+
+    @property
+    def path(self) -> Path:
+        return self.workspace / SUBMISSION_STATE_FILENAME
+
+    @property
+    def manifest_paths(self) -> list[Path]:
+        return [manifest for _alias, _run, manifest in self.manifests]
+
+    def is_done(self, stage: str) -> bool:
+        return stage in self.completed_stages
+
+    def mark_done(self, stage: str) -> None:
+        """Record a stage ENA has accepted, and persist it immediately."""
+        if stage not in self.completed_stages:
+            self.completed_stages.append(stage)
+        self.save()
+
+    def set_production_study(self, accession: str) -> None:
+        self.production_study = accession
+        self.save()
+
+    def save(self) -> None:
+        payload = {
+            "version": SUBMISSION_STATE_VERSION,
+            "created": self.created,
+            "source_path": str(self.source_path),
+            "context": self.context,
+            "test_first": self.test_first,
+            "checklist_accession": self.checklist_accession,
+            "metadata_tsv": str(self.metadata_tsv),
+            "sample_xml": str(self.sample_xml),
+            "submission_xml": str(self.submission_xml),
+            "webin_user": self.webin_user,
+            "production_study": self.production_study,
+            "completed_stages": list(self.completed_stages),
+            "manifests": [
+                {
+                    "alias": alias,
+                    "run_name": run.run_name,
+                    "pairing": run.pairing,
+                    "files": [str(file) for file in run.files],
+                    "path": str(manifest),
+                }
+                for alias, run, manifest in self.manifests
+            ],
+        }
+        self.path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def load_submission_state(workspace: Path) -> SubmissionState | None:
+    """Read a saved submission from a workspace, or None when there is none to resume."""
+    state_path = workspace / SUBMISSION_STATE_FILENAME
+    try:
+        payload = json.loads(state_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if payload.get("version") != SUBMISSION_STATE_VERSION:
+        return None
+    try:
+        manifests = [
+            (
+                entry["alias"],
+                samples_module.RunGroup(
+                    entry["run_name"],
+                    tuple(Path(file) for file in entry["files"]),
+                    entry["pairing"],
+                ),
+                Path(entry["path"]),
+            )
+            for entry in payload["manifests"]
+        ]
+        return SubmissionState(
+            workspace=workspace,
+            source_path=Path(payload["source_path"]),
+            context=payload["context"],
+            test_first=payload["test_first"],
+            checklist_accession=payload["checklist_accession"],
+            metadata_tsv=Path(payload["metadata_tsv"]),
+            sample_xml=Path(payload["sample_xml"]),
+            submission_xml=Path(payload["submission_xml"]),
+            manifests=manifests,
+            webin_user=payload["webin_user"],
+            created=payload.get("created", ""),
+            production_study=payload.get("production_study"),
+            completed_stages=list(payload.get("completed_stages", [])),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -888,15 +1021,31 @@ def submit_sample_registration(
     return 'success="true"' in receipt_text
 
 
+def parse_receipt_messages(receipt_text: str) -> list[str]:
+    """Return the messages ENA reported in a submission receipt, tagged by kind.
+
+    A rejected receipt lists the reason in a MESSAGES block after the SAMPLE or
+    PROJECT elements, so a plain `cat` of a long receipt scrolls the reason out
+    of view. Callers surface these lines instead of only the receipt path.
+    """
+    try:
+        root = ET.fromstring(receipt_text)
+    except ET.ParseError:
+        return []
+
+    messages = []
+    for message in root.findall(".//MESSAGES/*"):
+        detail = " ".join("".join(message.itertext()).split())
+        if detail:
+            messages.append(f"{message.tag.upper()}: {detail}")
+    return messages
+
+
 def parse_project_accession_from_receipt(receipt_text: str) -> str:
     """Extract the project accession from an ENA project-registration receipt."""
     root = ET.fromstring(receipt_text)
     if root.attrib.get("success", "").lower() != "true":
-        messages = [
-            "".join(message.itertext()).strip()
-            for message in root.findall(".//MESSAGES/*")
-            if "".join(message.itertext()).strip()
-        ]
+        messages = parse_receipt_messages(receipt_text)
         detail = "; ".join(messages) if messages else "receipt success was not true"
         raise ValueError(f"ENA project registration failed: {detail}")
 
@@ -1472,6 +1621,39 @@ def _edit_sample_mapping(
         return grouping
 
 
+def _write_metadata_template_interactive(
+    console: Console,
+    checklist: Checklist,
+    metadata_template: Path,
+    *,
+    include_optional: bool,
+    sample_names: list[str],
+) -> None:
+    """Write the metadata template, keeping a filled-in one from an earlier run.
+
+    Rerunning the wizard into an existing workspace — after a failed submission,
+    for example — would otherwise overwrite the completed TSV with an empty
+    template and discard the metadata the user typed row by row.
+    """
+    if metadata_template.exists():
+        console.print(f"\n  [yellow]A metadata TSV already exists:[/yellow] {metadata_template}")
+        console.print(
+            "  [dim]An earlier run of the wizard wrote it. Keep it to reuse the values "
+            "already filled in; overwriting replaces it with an empty template.[/dim]"
+        )
+        if typer.confirm("  Keep the existing metadata TSV?", default=True):
+            console.print("  [green]Keeping the existing metadata TSV.[/green]")
+            return
+
+    write_metadata_template(
+        checklist,
+        metadata_template,
+        include_optional=include_optional,
+        sample_names=sample_names,
+    )
+    console.print(f"  [green]Metadata template written:[/green] {metadata_template}")
+
+
 def _review_sample_grouping(
     console: Console,
     data_files: list[Path],
@@ -1513,6 +1695,75 @@ def _review_sample_grouping(
             grouping = _prompt_grouping_pattern(console, grouping)
         else:
             grouping = _edit_sample_mapping(console, grouping, data_files, source, mapping_path)
+
+
+def _report_manifests_written(
+    console: Console,
+    manifests: list[tuple[str, samples_module.RunGroup, Path]],
+    workspace: Path,
+    *,
+    preview_lines: int = 20,
+) -> None:
+    """Summarize the written manifests and show one of them in full.
+
+    A reads submission writes one manifest per run, so printing every path
+    buries the rest of the wizard under hundreds of near-identical lines. The
+    count, the directory, and one complete example carry the same information
+    and also show what needs editing.
+    """
+    file_count = sum(run.file_count for _alias, run, _path in manifests)
+    console.print(
+        f"  [green]{len(manifests)} manifest(s) written[/green] covering {file_count} file(s):"
+    )
+    console.print(f"    {workspace}", style="cyan", markup=False, highlight=False)
+
+    _alias, example_run, example_path = manifests[0]
+    console.print(
+        f"\n  [dim]Example manifest[/dim] {example_path.name} "
+        f"[dim]({example_run.file_count} file(s))[/dim]"
+    )
+    try:
+        lines = example_path.read_text().splitlines()
+    except OSError:
+        return
+    # Manifest values can contain markup-like brackets, so print them verbatim.
+    for line in lines[:preview_lines]:
+        console.print(f"    {line}", style="dim", markup=False, highlight=False)
+    if len(lines) > preview_lines:
+        console.print(f"    ... and {len(lines) - preview_lines} more line(s)", style="dim")
+
+
+def _read_receipt_messages(receipt_xml: Path) -> list[str]:
+    """Read the messages ENA wrote into a receipt, if the receipt is readable."""
+    try:
+        receipt_text = receipt_xml.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return parse_receipt_messages(receipt_text)
+
+
+# ENA registers samples through BioSamples, and an outage of that backend fails
+# the whole submission with these messages instead of a metadata complaint. The
+# submission is unchanged and nothing was registered, so it can simply be sent
+# again — unlike a checklist error or an alias that already exists.
+TRANSIENT_RECEIPT_FAILURE_MARKERS = (
+    "failed to submit samples to biosamples",
+    "no new biosample was created",
+    "internal server error",
+    "service unavailable",
+    "try again later",
+)
+
+
+def _receipt_failure_is_transient(messages: list[str]) -> bool:
+    """Report whether a rejected receipt blames ENA's own services, not the metadata."""
+    if not messages:
+        return False
+    lowered = [message.lower() for message in messages if message.upper().startswith("ERROR:")]
+    return bool(lowered) and all(
+        any(marker in message for marker in TRANSIENT_RECEIPT_FAILURE_MARKERS)
+        for message in lowered
+    )
 
 
 def _submit_sample_metadata_interactive(
@@ -1562,19 +1813,39 @@ def _submit_sample_metadata_interactive(
             return False
 
         if not submitted:
+            messages = _read_receipt_messages(receipt_xml)
             console.print(
-                f"  [bold red]Error:[/bold red] Sample metadata submission to {service_label} failed.\n"
-                f"  Receipt: {receipt_xml}"
+                f"  [bold red]Error:[/bold red] Sample metadata submission to {service_label} failed."
             )
+            for message in messages:
+                console.print(f"    {message}")
+            console.print(f"  Receipt: {receipt_xml}")
+            if not _receipt_failure_is_transient(messages):
+                return False
+            console.print(
+                "  [dim]ENA rejected the submission on its own side, not over the metadata: "
+                "no sample was registered, so the same submission can be sent again "
+                "once the service recovers.[/dim]"
+            )
+            if typer.confirm("  Retry the sample metadata submission?", default=True):
+                console.print()
+                continue
+            console.print("[bold red]Error:[/bold red] Sample metadata submission cancelled.")
             return False
         console.print("  [green]Sample metadata submitted.[/green]")
         return True
 
 
-def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
+def run_transfer_wizard(
+    source: str | None,
+    keep_original: bool,
+    resume: str | None = None,
+) -> int:
     """Run the ENA submission wizard, reporting filesystem problems as plain messages."""
     console = Console()
     try:
+        if resume is not None:
+            return _resume_transfer_wizard(console, resume, keep_original)
         return _run_transfer_wizard(console, source, keep_original)
     except errors_module.UserError as exc:
         console.print()
@@ -1587,6 +1858,116 @@ def run_transfer_wizard(source: str | None, keep_original: bool) -> int:
     except (KeyboardInterrupt, click.Abort):
         console.print("\n  Wizard cancelled.")
         return 130
+
+
+def _describe_submission_state(console: Console, state: SubmissionState) -> None:
+    """Summarise what a workspace already holds, so the user can confirm it is the right one."""
+    rows = [
+        ("Prepared", state.created or "unknown"),
+        ("Source data", str(state.source_path)),
+        ("Submission type", state.context),
+        ("Checklist", state.checklist_accession),
+        ("Metadata TSV", state.metadata_tsv.name),
+        ("Manifests", f"{len(state.manifests)} run(s)"),
+        ("Webin user", state.webin_user),
+        ("Service", "test first, then production" if state.test_first else "production only"),
+    ]
+    if state.production_study:
+        rows.append(("Production study", state.production_study))
+    width = max(len(label) for label, _value in rows)
+    for label, value in rows:
+        console.print(f"    {label.ljust(width)}  [bold]{value}[/bold]")
+    if state.completed_stages:
+        console.print("    [green]Already accepted by ENA:[/green]")
+        for stage in state.completed_stages:
+            console.print(f"      - {STAGE_LABELS[stage]}")
+
+
+def _resume_transfer_wizard(console: Console, resume: str, keep_original: bool) -> int:
+    """Continue a submission prepared by an earlier run of the wizard."""
+    workspace = errors_module.expand_path(resume, action="read")
+    state = load_submission_state(workspace)
+    if state is None:
+        console.print(
+            f"[bold red]Error:[/bold red] No resumable submission was found in {workspace}.\n"
+            f"  A workspace prepared by [bold]mt transfer ena[/bold] contains "
+            f"{SUBMISSION_STATE_FILENAME}.\n"
+            "  Start a new submission with: [bold]mt transfer ena <path>[/bold]"
+        )
+        return 1
+    if state.is_done(STAGE_COMPLETE):
+        console.print(
+            f"[green]The submission in {workspace} is already complete.[/green]\n"
+            "  Start a new submission with: [bold]mt transfer ena <path>[/bold]"
+        )
+        return 0
+    outcome = _resume_from_state(console, state, keep_original)
+    if outcome is None:
+        console.print("  [yellow]Cancelled.[/yellow]")
+        return 0
+    return outcome
+
+
+def _resume_from_state(
+    console: Console,
+    state: SubmissionState,
+    keep_original: bool,
+) -> int | None:
+    """Show a prepared submission, confirm it, and run the submission steps that remain.
+
+    Returns the wizard exit code, or None when the user declines to resume, which
+    lets the caller carry on with a fresh submission instead.
+    """
+    console.print()
+    console.print(Panel(
+        "[bold]Resume ENA submission[/bold]\n\n"
+        "This workspace already holds a prepared submission. Resuming reuses the\n"
+        "metadata and manifests it contains and continues from the first step ENA\n"
+        "has not yet accepted.",
+        title="mt transfer ena --resume",
+        title_align="left",
+        border_style="bold cyan",
+    ))
+    console.print()
+    _describe_submission_state(console, state)
+    console.print()
+
+    missing = [
+        artifact
+        for artifact in [state.sample_xml, state.submission_xml, *state.manifest_paths]
+        if not artifact.exists()
+    ]
+    if missing:
+        console.print(
+            f"[bold red]Error:[/bold red] {len(missing)} prepared file(s) are missing from the "
+            "workspace, so this submission cannot be resumed:"
+        )
+        for artifact in missing[:5]:
+            console.print(f"    - {artifact}")
+        if len(missing) > 5:
+            console.print(f"    ... and {len(missing) - 5} more")
+        return 1
+
+    if not typer.confirm("  Resume this submission?", default=True):
+        return None
+
+    credentials = _select_webin_credentials(console, preferred_username=state.webin_user)
+    if credentials is None:
+        return 1
+
+    if any(manifest_has_todos(manifest) for manifest in state.manifest_paths):
+        console.print(
+            "[bold red]Error:[/bold red] One or more manifests still contain TODO values.\n"
+            f"  Edit them in {state.workspace} and resume again."
+        )
+        return 1
+
+    return _run_submission_phase(
+        console,
+        state=state,
+        credentials=credentials,
+        keep_original=keep_original,
+    )
 
 
 def _run_transfer_wizard(console: Console, source: str | None, keep_original: bool) -> int:
@@ -1663,6 +2044,15 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
     if workspace is None:
         return 1
 
+    # A workspace from an earlier run holds everything that run prepared; walking
+    # the whole wizard again would only rebuild it, prompt by prompt.
+    existing = load_submission_state(workspace)
+    if existing is not None and not existing.is_done(STAGE_COMPLETE):
+        resumed = _resume_from_state(console, existing, keep_original)
+        if resumed is not None:
+            return resumed
+        console.print("  [dim]Preparing a new submission in this workspace.[/dim]")
+
     _print_submission_context_help(console)
     context = _prompt_choice("  Submission type", VALID_CONTEXTS, default="reads")
     _print_prompt_help(
@@ -1728,13 +2118,13 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
     )
 
     metadata_template = workspace / f"samples_{checklist.accession}.tsv"
-    write_metadata_template(
+    _write_metadata_template_interactive(
+        console,
         checklist,
         metadata_template,
         include_optional=include_optional,
         sample_names=grouping.aliases,
     )
-    console.print(f"  [green]Metadata template written:[/green] {metadata_template}")
 
     scp_download_command = generate_scp_download_command(metadata_template)
     scp_upload_command = generate_scp_upload_command(
@@ -1830,7 +2220,6 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
             run_name=run.run_name,
         )
         manifests.append((alias, run, manifest_path))
-        console.print(f"  [green]Manifest written:[/green] {manifest_path} ({run.file_count} file(s))")
 
     if unclaimed:
         console.print(
@@ -1842,6 +2231,23 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
     if not manifests:
         console.print("[bold red]Error:[/bold red] No manifests were generated.")
         return 1
+
+    state = SubmissionState(
+        workspace=workspace,
+        source_path=source_path,
+        context=context,
+        test_first=test_first,
+        checklist_accession=checklist.accession,
+        metadata_tsv=metadata_path,
+        sample_xml=sample_xml,
+        submission_xml=submission_xml,
+        manifests=manifests,
+        webin_user=credentials.username,
+        created=datetime.now().strftime("%Y-%m-%d %H:%M"),
+    )
+    state.save()
+
+    _report_manifests_written(console, manifests, workspace)
 
     if context == "reads":
         preview_table = Table(title="Sample–run–file assignment (first 5)", show_lines=True)
@@ -1858,14 +2264,44 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
         )
     else:
         console.print(
-            "\n  Review the manifests above. Replace every TODO with the "
+            f"\n  Review the manifests in {workspace}. Replace every TODO with the "
             "submission metadata required for the selected ENA context."
         )
     click.pause("  Review the manifests, then press Enter to continue...")
     if any(manifest_has_todos(m) for _alias, _run, m in manifests):
-        console.print("[bold red]Error:[/bold red] One or more manifests still contain TODO values.")
+        console.print(
+            "[bold red]Error:[/bold red] One or more manifests still contain TODO values.\n"
+            f"  Fill them in, then continue without redoing this wizard:\n"
+            f"  [cyan]mt transfer ena --resume {workspace}[/cyan]"
+        )
         return 1
 
+    console.print(
+        "  [dim]Workspace state saved. If this run stops, continue it with:[/dim]\n"
+        f"  [cyan]mt transfer ena --resume {workspace}[/cyan]"
+    )
+
+    return _run_submission_phase(
+        console,
+        state=state,
+        credentials=credentials,
+        keep_original=keep_original,
+    )
+
+
+def _run_submission_phase(
+    console: Console,
+    *,
+    state: SubmissionState,
+    credentials: config_module.EnaCredentials,
+    keep_original: bool,
+) -> int:
+    """Submit the prepared metadata and data files, recording each accepted stage.
+
+    Stages are marked in the workspace state file as soon as ENA accepts them, so
+    a resumed run does not resubmit samples that are already registered — ENA
+    rejects a repeat as an alias that already exists.
+    """
     webin_cli_jar = _ensure_webin_cli_jar(console)
     if webin_cli_jar is None:
         return 1
@@ -1873,40 +2309,50 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
         console.print("[bold red]Error:[/bold red] Java is required for Webin-CLI but was not found in PATH.")
         return 1
 
+    workspace = state.workspace
+    source_path = state.source_path
+    manifests = state.manifests
     input_dir = source_path.parent if source_path.is_file() else source_path
     log_dir = workspace / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    if test_first:
+    if state.test_first:
         # Submit sample metadata to test service
-        test_receipt_xml = workspace / "sample-receipt-test.xml"
-        console.print()
-        if not _submit_sample_metadata_interactive(
-            console=console,
-            credentials=credentials,
-            submission_xml=submission_xml,
-            sample_xml=sample_xml,
-            receipt_xml=test_receipt_xml,
-            test_service=True,
-            service_label="test service",
-        ):
-            return 1
+        if state.is_done(STAGE_TEST_SAMPLES):
+            _report_skipped_stage(console, STAGE_TEST_SAMPLES)
+        else:
+            console.print()
+            if not _submit_sample_metadata_interactive(
+                console=console,
+                credentials=credentials,
+                submission_xml=state.submission_xml,
+                sample_xml=state.sample_xml,
+                receipt_xml=workspace / "sample-receipt-test.xml",
+                test_service=True,
+                service_label="test service",
+            ):
+                return 1
+            state.mark_done(STAGE_TEST_SAMPLES)
 
         # Submit data files to test service with per-sample progress
-        console.print()
-        test_ok = _run_sample_submissions_with_progress(
-            console=console,
-            jar=webin_cli_jar,
-            credentials=credentials,
-            context=context,
-            run_manifests=manifests,
-            input_dir=input_dir,
-            output_dir=workspace / "webin-cli-output-test",
-            test_service=True,
-            log_dir=log_dir,
-        )
-        if not test_ok:
-            return 1
+        if state.is_done(STAGE_TEST_DATA):
+            _report_skipped_stage(console, STAGE_TEST_DATA)
+        else:
+            console.print()
+            test_ok = _run_sample_submissions_with_progress(
+                console=console,
+                jar=webin_cli_jar,
+                credentials=credentials,
+                context=state.context,
+                run_manifests=manifests,
+                input_dir=input_dir,
+                output_dir=workspace / "webin-cli-output-test",
+                test_service=True,
+                log_dir=log_dir,
+            )
+            if not test_ok:
+                return 1
+            state.mark_done(STAGE_TEST_DATA)
 
         # Confirm production submission
         console.print()
@@ -1916,18 +2362,27 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
             default=False,
         ):
             console.print("[green]Test submission complete. Skipping production.[/green]")
+            console.print(
+                "  [dim]Submit to production later with: "
+                f"mt transfer ena --resume {workspace}[/dim]"
+            )
             return 0
 
         # Get production study now that test has succeeded
-        console.print("\n[bold]Production service study[/bold]")
-        production_study = _select_or_register_study(
-            console=console,
-            workspace=workspace,
-            credentials=credentials,
-            test_service=False,
-        )
+        production_study = state.production_study
         if production_study is None:
-            return 1
+            console.print("\n[bold]Production service study[/bold]")
+            production_study = _select_or_register_study(
+                console=console,
+                workspace=workspace,
+                credentials=credentials,
+                test_service=False,
+            )
+            if production_study is None:
+                return 1
+            state.set_production_study(production_study)
+        else:
+            console.print(f"\n  Production study: [bold]{production_study}[/bold]")
 
         # Generate production manifests now that we have the study accession
         production_manifests: list[tuple[str, samples_module.RunGroup, Path]] = []
@@ -1942,79 +2397,92 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
         console.print(f"  [green]{len(production_manifests)} production manifest(s) written.[/green]")
 
         # Submit sample metadata to production
-        prod_receipt_xml = workspace / "sample-receipt-production.xml"
-        console.print()
-        if not _submit_sample_metadata_interactive(
-            console=console,
-            credentials=credentials,
-            submission_xml=submission_xml,
-            sample_xml=sample_xml,
-            receipt_xml=prod_receipt_xml,
-            test_service=False,
-            service_label="production",
-        ):
-            return 1
+        if state.is_done(STAGE_PRODUCTION_SAMPLES):
+            _report_skipped_stage(console, STAGE_PRODUCTION_SAMPLES)
+        else:
+            console.print()
+            if not _submit_sample_metadata_interactive(
+                console=console,
+                credentials=credentials,
+                submission_xml=state.submission_xml,
+                sample_xml=state.sample_xml,
+                receipt_xml=workspace / "sample-receipt-production.xml",
+                test_service=False,
+                service_label="production",
+            ):
+                return 1
+            state.mark_done(STAGE_PRODUCTION_SAMPLES)
 
         # Submit data files to production with per-sample progress
-        console.print()
-        prod_ok = _run_sample_submissions_with_progress(
-            console=console,
-            jar=webin_cli_jar,
-            credentials=credentials,
-            context=context,
-            run_manifests=production_manifests,
-            input_dir=input_dir,
-            output_dir=workspace / "webin-cli-output-production",
-            test_service=False,
-            log_dir=log_dir,
-        )
-        if not prod_ok:
-            return 1
-
-        if not keep_original:
-            if source_path.is_dir():
-                shutil.rmtree(source_path)
-            else:
-                source_path.unlink()
-        console.print("[bold green]ENA transfer complete.[/bold green]")
-        return 0
+        if state.is_done(STAGE_PRODUCTION_DATA):
+            _report_skipped_stage(console, STAGE_PRODUCTION_DATA)
+        else:
+            console.print()
+            prod_ok = _run_sample_submissions_with_progress(
+                console=console,
+                jar=webin_cli_jar,
+                credentials=credentials,
+                context=state.context,
+                run_manifests=production_manifests,
+                input_dir=input_dir,
+                output_dir=workspace / "webin-cli-output-production",
+                test_service=False,
+                log_dir=log_dir,
+            )
+            if not prod_ok:
+                return 1
+            state.mark_done(STAGE_PRODUCTION_DATA)
 
     else:
         # Direct production submission (no test)
-        console.print()
-        if not _submit_sample_metadata_interactive(
-            console=console,
-            credentials=credentials,
-            submission_xml=submission_xml,
-            sample_xml=sample_xml,
-            receipt_xml=receipt_xml,
-            test_service=False,
-            service_label="production",
-        ):
-            return 1
+        if state.is_done(STAGE_PRODUCTION_SAMPLES):
+            _report_skipped_stage(console, STAGE_PRODUCTION_SAMPLES)
+        else:
+            console.print()
+            if not _submit_sample_metadata_interactive(
+                console=console,
+                credentials=credentials,
+                submission_xml=state.submission_xml,
+                sample_xml=state.sample_xml,
+                receipt_xml=workspace / "sample-receipt.xml",
+                test_service=False,
+                service_label="production",
+            ):
+                return 1
+            state.mark_done(STAGE_PRODUCTION_SAMPLES)
 
-        console.print()
-        data_ok = _run_sample_submissions_with_progress(
-            console=console,
-            jar=webin_cli_jar,
-            credentials=credentials,
-            context=context,
-            run_manifests=manifests,
-            input_dir=input_dir,
-            output_dir=workspace / "webin-cli-output",
-            test_service=False,
-            log_dir=log_dir,
-        )
-        if not data_ok:
-            return 1
+        if state.is_done(STAGE_PRODUCTION_DATA):
+            _report_skipped_stage(console, STAGE_PRODUCTION_DATA)
+        else:
+            console.print()
+            data_ok = _run_sample_submissions_with_progress(
+                console=console,
+                jar=webin_cli_jar,
+                credentials=credentials,
+                context=state.context,
+                run_manifests=manifests,
+                input_dir=input_dir,
+                output_dir=workspace / "webin-cli-output",
+                test_service=False,
+                log_dir=log_dir,
+            )
+            if not data_ok:
+                return 1
+            state.mark_done(STAGE_PRODUCTION_DATA)
 
-        if not keep_original:
-            if source_path.is_dir():
-                shutil.rmtree(source_path)
-            else:
-                source_path.unlink()
-        console.print("[bold green]ENA transfer complete.[/bold green]")
-        return 0
+    state.mark_done(STAGE_COMPLETE)
+    if not keep_original:
+        if source_path.is_dir():
+            shutil.rmtree(source_path)
+        else:
+            source_path.unlink()
+    console.print("[bold green]ENA transfer complete.[/bold green]")
+    return 0
+
+
+def _report_skipped_stage(console: Console, stage: str) -> None:
+    """Note a stage ENA already accepted in an earlier run of this workspace."""
+    console.print(f"\n  [green]Already done:[/green] {STAGE_LABELS[stage]} — skipping.")
 
 
 def _workspace_fallback(default_workspace: Path) -> Path:
@@ -2053,8 +2521,15 @@ def _prompt_workspace_directory(
     return None
 
 
-def _select_webin_credentials(console: Console) -> config_module.EnaCredentials | None:
-    """Select which configured ENA Webin user should be used for submission."""
+def _select_webin_credentials(
+    console: Console,
+    preferred_username: str | None = None,
+) -> config_module.EnaCredentials | None:
+    """Select which configured ENA Webin user should be used for submission.
+
+    A resumed submission must go out under the account that registered its study
+    and samples, so a preferred username is used without asking again.
+    """
     credentials = config_module._list_ena_credentials()
     if not credentials:
         console.print(
@@ -2062,6 +2537,15 @@ def _select_webin_credentials(console: Console) -> config_module.EnaCredentials 
             "  Run [bold]mt config ena[/bold] first."
         )
         return None
+    if preferred_username is not None:
+        for candidate in credentials:
+            if candidate.username == preferred_username:
+                console.print(f"  Webin user: [bold]{candidate.username}[/bold]")
+                return candidate
+        console.print(
+            f"  [yellow]Warning:[/yellow] The Webin user that prepared this submission "
+            f"({preferred_username}) is no longer configured."
+        )
     if len(credentials) == 1:
         console.print(f"  Webin user: [bold]{credentials[0].username}[/bold]")
         return credentials[0]

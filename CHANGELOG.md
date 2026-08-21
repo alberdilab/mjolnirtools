@@ -2,6 +2,51 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.3.3 - 2026-08-21
+
+### Changed
+
+- `mt transfer ena` no longer prints one `Manifest written:` line per manifest.
+  A reads submission writes one manifest per run, so a 229-run submission
+  scrolled the workspace path past 229 near-identical lines and pushed the
+  sample–run–file table and the warnings about unmatched samples off screen.
+  The wizard now reports how many manifests were written, where they live, and
+  shows the contents of one of them as an example, which is also the file the
+  non-reads contexts need to inspect for TODO values.
+- A rejected sample metadata submission now prints the `ERROR` and `INFO`
+  messages ENA returned in the receipt, not just the receipt path. ENA lists
+  the reason in a `MESSAGES` block after one line per sample, so on a large
+  submission the reason scrolled out of view when the receipt was opened by
+  hand.
+- A sample metadata submission that ENA rejects because its own BioSamples
+  backend failed (`Failed to submit samples to BioSamples`) now offers a retry
+  instead of ending the wizard. That failure registers no sample and leaves the
+  submission unchanged, so it is safe to send again; rejections that name the
+  metadata, such as a checklist error or an alias that already exists, still
+  stop as before.
+
+### Added
+
+- `mt transfer ena --resume <workspace>` continues a submission an earlier run
+  prepared. Everything the wizard prepares — the sample grouping, the checklist,
+  the completed metadata TSV, one manifest per run — costs far more time than
+  the submission itself, and a submission that stopped for any reason sent the
+  user back through every prompt. The wizard now records the prepared
+  submission in `.mt-ena-submission.json` in the workspace, along with each
+  stage ENA accepts, and resumes from the first stage that has not completed.
+  Stages ENA already accepted are skipped, so registered samples are never
+  resubmitted. Starting a run in a workspace that holds a prepared submission
+  offers the same choice.
+
+### Fixed
+
+- Rerunning `mt transfer ena` in a workspace that already holds a sample
+  metadata TSV no longer overwrites it with an empty template. Any run that
+  ends after the template step — a failed submission, a lost connection —
+  sends the user back through the wizard, and the second pass silently
+  discarded the metadata they had filled in row by row. The wizard now offers
+  to keep the existing file.
+
 ## 1.3.2 - 2026-08-21
 
 ### Fixed
