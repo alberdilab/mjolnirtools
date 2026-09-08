@@ -484,6 +484,10 @@ class EnaTests(unittest.TestCase):
         self.assertIn("curl -sS", text)
         self.assertIn("wwwdev.ebi.ac.uk", text)
         self.assertIn("java -jar", text)
+        # The Java check must run before the first submission, not after it.
+        self.assertIn("command -v java", text)
+        self.assertLess(text.index("command -v java"), text.index("curl -sS"))
+        self.assertIn(f"-lt {ena.WEBIN_CLI_MIN_JAVA}", text)
         self.assertIn("tee -a \"$LOG_FILE\"", text)
         self.assertIn("-context reads", text)
         self.assertIn("-submit -test", text)
@@ -1152,6 +1156,73 @@ class TransferWizardErrorHandlingTests(unittest.TestCase):
         buffer = StringIO()
         return Console(file=buffer, width=100, force_terminal=False), buffer
 
+    def test_java_version_is_parsed_from_every_release_naming_scheme(self):
+        # Java 8 and earlier report "1.8.0_441"; later releases report "17.0.9".
+        self.assertEqual(ena.parse_java_major_version('java version "1.8.0_441"'), 8)
+        self.assertEqual(ena.parse_java_major_version('openjdk version "11.0.20"'), 11)
+        self.assertEqual(ena.parse_java_major_version('openjdk version "17.0.9" 2023-10-17'), 17)
+        self.assertEqual(ena.parse_java_major_version('openjdk version "21.0.1" 2023-10-17 LTS'), 21)
+        self.assertEqual(ena.parse_java_major_version('openjdk version "17-ea" 2021-09-14'), 17)
+        self.assertEqual(ena.parse_java_major_version('openjdk version "24"'), 24)
+        self.assertIsNone(ena.parse_java_major_version("no version here"))
+
+    def test_java_preflight_rejects_a_runtime_older_than_webin_cli_needs(self):
+        console, buffer = self._console()
+        with mock.patch("mjolnirtools.ena.shutil.which", return_value="/usr/bin/java"):
+            with mock.patch("mjolnirtools.ena.detect_java_major_version", return_value=8):
+                self.assertFalse(ena._ensure_java_runtime(console))
+
+        output = buffer.getvalue()
+        self.assertIn("Java 17 or newer", output)
+        self.assertIn("Java 8 is on PATH", output)
+        self.assertIn("conda install", output)
+
+    def test_java_preflight_accepts_a_supported_runtime(self):
+        console, _ = self._console()
+        with mock.patch("mjolnirtools.ena.shutil.which", return_value="/usr/bin/java"):
+            with mock.patch("mjolnirtools.ena.detect_java_major_version", return_value=21):
+                self.assertTrue(ena._ensure_java_runtime(console))
+
+    def test_java_preflight_reports_a_missing_runtime(self):
+        console, buffer = self._console()
+        with mock.patch("mjolnirtools.ena.shutil.which", return_value=None):
+            self.assertFalse(ena._ensure_java_runtime(console))
+
+        self.assertIn("not found in PATH", buffer.getvalue())
+
+    def test_java_preflight_allows_a_runtime_whose_version_cannot_be_read(self):
+        console, buffer = self._console()
+        with mock.patch("mjolnirtools.ena.shutil.which", return_value="/usr/bin/java"):
+            with mock.patch("mjolnirtools.ena.detect_java_major_version", return_value=None):
+                self.assertTrue(ena._ensure_java_runtime(console))
+
+        self.assertIn("Could not read the Java version", buffer.getvalue())
+
+    def test_submission_phase_stops_before_submitting_anything_on_old_java(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, _ = self._console()
+            state = self._prepared_state(Path(tmpdir) / "ws")
+
+            with mock.patch("mjolnirtools.ena._ensure_java_runtime", return_value=False) as java:
+                with mock.patch("mjolnirtools.ena._ensure_webin_cli_jar") as jar:
+                    with mock.patch(
+                        "mjolnirtools.ena._submit_sample_metadata_interactive"
+                    ) as samples:
+                        exit_code = ena._run_submission_phase(
+                            console,
+                            state=state,
+                            credentials=config_module.EnaCredentials(
+                                "Webin-1", "secret", Path(tmpdir) / "creds"
+                            ),
+                            keep_original=True,
+                        )
+
+            self.assertEqual(exit_code, 1)
+            java.assert_called_once()
+            # Nothing reaches ENA, and the JAR is not downloaded, when Java is too old.
+            jar.assert_not_called()
+            samples.assert_not_called()
+
     def test_workspace_prompt_accepts_a_writable_directory(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             console, _ = self._console()
@@ -1502,7 +1573,7 @@ class TransferWizardErrorHandlingTests(unittest.TestCase):
     @contextlib.contextmanager
     def _submission_phase_mocks(self, *, confirm=False):
         with mock.patch("mjolnirtools.ena._ensure_webin_cli_jar", return_value=Path("webin.jar")):
-            with mock.patch("mjolnirtools.ena.shutil.which", return_value="/usr/bin/java"):
+            with mock.patch("mjolnirtools.ena._ensure_java_runtime", return_value=True):
                 with mock.patch("mjolnirtools.ena.typer.confirm", return_value=confirm):
                     with mock.patch(
                         "mjolnirtools.ena._submit_sample_metadata_interactive", return_value=True

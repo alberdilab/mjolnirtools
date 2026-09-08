@@ -134,9 +134,39 @@ workflow.
 .. note::
 
    Requires ``mt config ena`` to have been run first. The command also requires
-   Java and a local Webin-CLI ``.jar`` file. Set ``WEBIN_CLI_JAR`` or provide
-   the jar path when prompted. If multiple Webin users have been configured,
-   the wizard asks which user to submit with before creating the workspace.
+   a local Webin-CLI ``.jar`` file. Set ``WEBIN_CLI_JAR`` or provide the jar
+   path when prompted. If multiple Webin users have been configured, the wizard
+   asks which user to submit with before creating the workspace.
+
+.. _ena-java-requirement:
+
+Java requirement
+~~~~~~~~~~~~~~~~
+
+Webin-CLI is a Java program, and current releases need **Java 17 or newer**. An
+older runtime fails with ``UnsupportedClassVersionError``, so ``mt transfer
+ena`` checks the version of the ``java`` on ``PATH`` before submitting anything
+and stops with an explanation if it is too old.
+
+Java cannot be installed by ``pip``, so it is not a ``mjolnirtools``
+dependency. It has to come from the environment. Check which version is active
+with:
+
+.. code-block:: console
+
+   $ java -version
+
+If it is older than 17, or missing, use one of these:
+
+.. code-block:: console
+
+   $ module avail java          # then load a 17+ module the cluster provides
+   $ conda install -c conda-forge openjdk=21   # inside the active environment
+
+Either one puts a suitable ``java`` on ``PATH`` for the current session. A
+submission that stopped on this check can be continued with
+``mt transfer ena --resume <workspace>`` once Java is available; stages ENA has
+already accepted are not repeated.
 
 Usage:
 

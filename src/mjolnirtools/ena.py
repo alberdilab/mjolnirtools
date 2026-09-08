@@ -43,6 +43,12 @@ WEBIN_CLI_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/general-gu
 WEBIN_CLI_RELEASES_URL = "https://github.com/enasequence/webin-cli/releases"
 WEBIN_CLI_GITHUB_API = "https://api.github.com/repos/enasequence/webin-cli/releases/latest"
 WEBIN_CLI_CACHE_DIR = Path.home() / ".mjolnirtools" / "webin-cli"
+WEBIN_CLI_MIN_JAVA = 17
+JAVA_INSTALL_HINTS = (
+    "On an HPC, load a Java module:  module avail java   then  module load <the 17+ module>",
+    "With conda:  conda install -c conda-forge openjdk=21",
+    "Or point PATH and JAVA_HOME at a JDK 17 or newer that is already installed.",
+)
 STUDY_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/study.html"
 STUDY_PROGRAMMATIC_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/study/programmatic.html"
 SAMPLE_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/samples.html"
@@ -1377,6 +1383,20 @@ if [ -z "$ENA_USER" ] || [ -z "$ENA_PASS" ]; then
   echo "ERROR: ENA credentials are incomplete: $CREDS" >&2
   exit 1
 fi
+
+if ! command -v java >/dev/null 2>&1; then
+  echo "ERROR: Webin-CLI needs Java {WEBIN_CLI_MIN_JAVA} or newer, but java was not found in PATH." >&2
+  echo "  Load a Java module (module avail java), or: conda install -c conda-forge openjdk=21" >&2
+  exit 1
+fi
+JAVA_VERSION_OUTPUT="$(java -version 2>&1 || true)"
+JAVA_MAJOR="$(printf '%s\\n' "$JAVA_VERSION_OUTPUT" | awk -F'"' '/version/ {{split($2, v, /[._-]/); print (v[1] == 1 ? v[2] : v[1]); exit}}')"
+if [ -n "$JAVA_MAJOR" ] && [ "$JAVA_MAJOR" -lt {WEBIN_CLI_MIN_JAVA} ]; then
+  echo "ERROR: Webin-CLI needs Java {WEBIN_CLI_MIN_JAVA} or newer, but Java $JAVA_MAJOR is on PATH." >&2
+  echo "  Load a Java module (module avail java), or: conda install -c conda-forge openjdk=21" >&2
+  exit 1
+fi
+
 mkdir -p "$OUTPUT_DIR"
 
 echo "Submitting sample metadata..."
@@ -2302,11 +2322,10 @@ def _run_submission_phase(
     a resumed run does not resubmit samples that are already registered — ENA
     rejects a repeat as an alias that already exists.
     """
+    if not _ensure_java_runtime(console):
+        return 1
     webin_cli_jar = _ensure_webin_cli_jar(console)
     if webin_cli_jar is None:
-        return 1
-    if shutil.which("java") is None:
-        console.print("[bold red]Error:[/bold red] Java is required for Webin-CLI but was not found in PATH.")
         return 1
 
     workspace = state.workspace
@@ -2746,6 +2765,73 @@ def _prompt_study_hold_date(console: Console, *, indent: int = 0) -> str | None:
             continue
         return value
 
+
+
+def parse_java_major_version(output: str) -> int | None:
+    """Return the major version reported by ``java -version``, or None if unreadable.
+
+    Java 8 and earlier report ``version "1.8.0_441"``, later releases report
+    ``version "17.0.9"``, so the leading ``1.`` is dropped when present.
+    """
+    match = re.search(r'version "(\d+)(?:\.(\d+))?', output)
+    if match is None:
+        return None
+    first = int(match.group(1))
+    if first != 1:
+        return first
+    minor = match.group(2)
+    return int(minor) if minor is not None else None
+
+
+def detect_java_major_version() -> int | None:
+    """Report the major version of the ``java`` on PATH, or None if it cannot be read."""
+    try:
+        result = subprocess.run(
+            ["java", "-version"], capture_output=True, text=True, errors="replace", timeout=60
+        )
+    except Exception:
+        return None
+    return parse_java_major_version(result.stderr + result.stdout)
+
+
+def _ensure_java_runtime(console: Console) -> bool:
+    """Check for a Java new enough to run Webin-CLI before anything is submitted.
+
+    Webin-CLI ships as a JAR built for a recent Java. An older runtime fails with
+    an ``UnsupportedClassVersionError`` once per manifest, after the sample
+    metadata has already been registered with ENA, so this runs first.
+    """
+    if shutil.which("java") is None:
+        errors_module.print_user_error(
+            console,
+            errors_module.UserError(
+                f"Webin-CLI needs Java {WEBIN_CLI_MIN_JAVA} or newer, but java was not found in PATH.",
+                JAVA_INSTALL_HINTS,
+            ),
+            indent="  ",
+        )
+        return False
+
+    version = detect_java_major_version()
+    if version is None:
+        console.print(
+            "  [yellow]Warning:[/yellow] Could not read the Java version. "
+            f"Webin-CLI needs Java {WEBIN_CLI_MIN_JAVA} or newer."
+        )
+        return True
+    if version < WEBIN_CLI_MIN_JAVA:
+        errors_module.print_user_error(
+            console,
+            errors_module.UserError(
+                f"Webin-CLI needs Java {WEBIN_CLI_MIN_JAVA} or newer, but Java {version} is on PATH.",
+                JAVA_INSTALL_HINTS,
+            ),
+            indent="  ",
+        )
+        return False
+
+    console.print(f"  [green]Java:[/green] {version}")
+    return True
 
 
 def _ensure_webin_cli_jar(console: Console) -> Path | None:

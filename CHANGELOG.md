@@ -2,6 +2,25 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.3.5 - 2026-09-08
+
+### Fixed
+
+- `mt transfer ena` now checks the Java version before submitting anything.
+  Current Webin-CLI releases are built for Java 17, so an older runtime failed
+  every run with `UnsupportedClassVersionError` — but only after the sample
+  metadata had already been registered with ENA, and once per manifest, so a
+  229-run submission produced 229 identical Java stack traces. The wizard now
+  reports the version it found, names the version Webin-CLI needs, and explains
+  how to get it (`module avail java`, or `conda install -c conda-forge
+  openjdk=21`). The check runs before the Webin-CLI JAR is downloaded, so a
+  cluster without a suitable Java no longer pulls the JAR either. The generated
+  submission script carries the same guard ahead of its first `curl`.
+
+  Java cannot be a `pip` dependency, so it is not declared in `pyproject.toml`;
+  it has to come from an environment module or a conda environment. See the
+  Java requirement section of the `mt transfer ena` documentation.
+
 ## 1.3.3 - 2026-08-21
 
 ### Changed
