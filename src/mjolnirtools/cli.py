@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import os
 import re
@@ -369,6 +370,88 @@ def normalize_shortcuts(args: Sequence[str]) -> list[str]:
         return normalized_args
 
     return [*replacement, *normalized_args[1:]]
+
+
+def documented_usages() -> list[str]:
+    """Return the example command lines documented for the topic commands."""
+    usages: list[str] = []
+    for lines in SUBCOMMAND_TREE_LINES.values():
+        for line in lines:
+            text = line.strip()
+            if text.startswith("mt "):
+                usages.append(text)
+    return usages
+
+
+def suggest_commands(args: Sequence[str]) -> list[str]:
+    """Return likely corrections for an unrecognised first argument.
+
+    Most unknown commands are word-order slips such as ``mt ena transfer``
+    instead of ``mt transfer ena``, so the arguments are checked against the
+    real commands and the documented subcommand lines before falling back to a
+    fuzzy match on the command names.
+    """
+    name = args[0]
+    rest = list(args[1:])
+    command_names = set(typer.main.get_command(app).commands) | set(SYSTEM_SHORTCUTS)
+    subcommands = [
+        (tokens[1], tokens[2])
+        for tokens in (usage.split() for usage in documented_usages())
+        if len(tokens) > 2 and tokens[1] in command_names
+    ]
+
+    # Swapped words, for example 'mt ena transfer' meaning 'mt transfer ena'.
+    if rest and (rest[0], name) in subcommands:
+        return [" ".join([rest[0], name, *rest[1:]])]
+
+    # A subcommand used on its own, for example 'mt ena' meaning 'mt transfer ena'.
+    suggestions: list[str] = []
+    for command_name, subcommand in subcommands:
+        if subcommand != name:
+            continue
+        suggestion = " ".join([command_name, name, *rest])
+        if suggestion not in suggestions:
+            suggestions.append(suggestion)
+    if suggestions:
+        return suggestions[:3]
+
+    # A job id on its own, for example 'mt 12345' meaning 'mt slurm 12345'.
+    if is_slurm_job_id(name):
+        return [" ".join(["slurm", name, *rest])]
+
+    # A misspelling, for example 'mt slrum' meaning 'mt slurm'.
+    matches = difflib.get_close_matches(name, sorted(command_names), n=1, cutoff=0.6)
+    return [" ".join([match, *rest]) for match in matches]
+
+
+def show_unknown_command(args: Sequence[str], prog_name: str) -> int:
+    """Report an unknown command as a usage mistake, never as a crash."""
+    hints: list[str] = []
+    suggestions = suggest_commands(args)
+    if suggestions:
+        hints.append("Did you mean:")
+        hints.extend(f"  {prog_name} {suggestion}" for suggestion in suggestions)
+    hints.append(f"Run '{prog_name} help' to see all commands.")
+    errors.print_user_error(
+        Console(stderr=True),
+        errors.UserError(f"Unknown {prog_name} command: '{args[0]}'.", hints),
+    )
+    return 2
+
+
+def is_usage_error(exc: BaseException) -> bool:
+    """Return whether *exc* is a Click usage error rather than a defect.
+
+    Environments that end up with two Click installations on the path raise a
+    ``UsageError`` that ``isinstance`` does not recognise, which is how a plain
+    typo once reached the last-resort handler and was reported as a bug, so the
+    class names are checked as well.
+    """
+    if isinstance(exc, click.ClickException):
+        return True
+    return any(
+        base.__name__ in {"ClickException", "UsageError"} for base in type(exc).__mro__
+    )
 
 
 def is_slurm_job_id(value: str) -> bool:
@@ -1794,6 +1877,13 @@ def transfer_command(
             show_default=False,
         ),
     ] = None,
+    no_aspera: Annotated[
+        bool,
+        typer.Option(
+            "--no-aspera",
+            help="For 'ena': upload over FTP even when Aspera (ascp) is available.",
+        ),
+    ] = False,
 ) -> None:
     """Upload a local path to ERDA or ENA in a background screen session."""
     keep_original = not delete
@@ -1802,6 +1892,8 @@ def transfer_command(
     if destination == "erda":
         if resume is not None:
             raise click.UsageError("--resume is only supported for mt transfer ena.")
+        if no_aspera:
+            raise click.UsageError("--no-aspera is only supported for mt transfer ena.")
         if source is None:
             raise click.UsageError("mt transfer erda requires a source path.")
         if erda_dest is None:
@@ -1843,7 +1935,11 @@ def transfer_command(
         if not config_module._config_has_ena():
             _exit_with_missing_config("ENA", "mt config ena")
 
-        raise typer.Exit(ena.run_transfer_wizard(source, keep_original, resume=resume))
+        raise typer.Exit(
+            ena.run_transfer_wizard(
+                source, keep_original, resume=resume, prefer_aspera=not no_aspera
+            )
+        )
 
     else:
         raise click.UsageError(
@@ -1963,6 +2059,8 @@ def main(argv: Sequence[str] | None = None, prog_name: str | None = None) -> int
     args = normalize_shortcuts(args)
 
     command = typer.main.get_command(app)
+    if not args[0].startswith("-") and args[0] not in command.commands:
+        return show_unknown_command(args, display_name)
     if (
         len(args) > 1
         and args[0] in command.commands
@@ -1999,6 +2097,12 @@ def main(argv: Sequence[str] | None = None, prog_name: str | None = None) -> int
         if os.environ.get("MT_TRACEBACK"):
             raise
         console = Console(stderr=True)
+        if is_usage_error(exc):
+            console.print(f"[bold red]Error:[/bold red] {exc}")
+            console.print(
+                f"  [dim]Run '{display_name} help' to see all commands.[/dim]"
+            )
+            return 2
         console.print(f"[bold red]Error:[/bold red] {type(exc).__name__}: {exc}")
         console.print(
             "  [dim]This looks like a bug in mjolnirtools. "

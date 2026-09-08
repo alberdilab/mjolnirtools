@@ -1571,9 +1571,10 @@ class TransferWizardErrorHandlingTests(unittest.TestCase):
             self.assertIsNone(ena.load_submission_state(workspace))
 
     @contextlib.contextmanager
-    def _submission_phase_mocks(self, *, confirm=False):
+    def _submission_phase_mocks(self, *, confirm=False, ascp="/opt/aspera/bin/ascp"):
         with mock.patch("mjolnirtools.ena._ensure_webin_cli_jar", return_value=Path("webin.jar")):
-            with mock.patch("mjolnirtools.ena._ensure_java_runtime", return_value=True):
+            with mock.patch("mjolnirtools.ena.detect_ascp", return_value=ascp), \
+                    mock.patch("mjolnirtools.ena._ensure_java_runtime", return_value=True):
                 with mock.patch("mjolnirtools.ena.typer.confirm", return_value=confirm):
                     with mock.patch(
                         "mjolnirtools.ena._submit_sample_metadata_interactive", return_value=True
@@ -1583,6 +1584,67 @@ class TransferWizardErrorHandlingTests(unittest.TestCase):
                             return_value=True,
                         ) as data:
                             yield samples, data
+
+    def test_submission_phase_uploads_over_aspera_when_ascp_is_installed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            state = self._prepared_state(Path(tmpdir) / "ws")
+
+            with self._submission_phase_mocks() as (_samples, data):
+                ena._run_submission_phase(
+                    console,
+                    state=state,
+                    credentials=config_module.EnaCredentials(
+                        "Webin-1", "secret", Path(tmpdir) / "creds"
+                    ),
+                    keep_original=True,
+                )
+
+            self.assertTrue(data.call_args.kwargs["use_aspera"])
+            self.assertIn("Aspera", buffer.getvalue())
+
+    def test_submission_phase_honours_no_aspera(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, _ = self._console()
+            state = self._prepared_state(Path(tmpdir) / "ws")
+
+            with self._submission_phase_mocks() as (_samples, data):
+                ena._run_submission_phase(
+                    console,
+                    state=state,
+                    credentials=config_module.EnaCredentials(
+                        "Webin-1", "secret", Path(tmpdir) / "creds"
+                    ),
+                    keep_original=True,
+                    prefer_aspera=False,
+                )
+
+            self.assertFalse(data.call_args.kwargs["use_aspera"])
+
+    def test_submission_phase_stops_before_submitting_when_aspera_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            console, buffer = self._console()
+            state = self._prepared_state(Path(tmpdir) / "ws")
+
+            # ascp missing, and the user declines to fall back to FTP.
+            with self._submission_phase_mocks(ascp=None, confirm=False) as (samples, data):
+                exit_code = ena._run_submission_phase(
+                    console,
+                    state=state,
+                    credentials=config_module.EnaCredentials(
+                        "Webin-1", "secret", Path(tmpdir) / "creds"
+                    ),
+                    keep_original=True,
+                )
+
+            self.assertEqual(exit_code, 1)
+            # Nothing reaches ENA, so the workspace can be resumed once the module is loaded.
+            samples.assert_not_called()
+            data.assert_not_called()
+            self.assertEqual(state.completed_stages, [])
+            output = buffer.getvalue()
+            self.assertIn(f"module load {ena.ASPERA_MODULE}", output)
+            self.assertIn("--resume", output)
 
     def test_submission_phase_skips_stages_ena_already_accepted(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1721,6 +1783,200 @@ class TransferWizardErrorHandlingTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 1)
             self.assertIn("Path not found", buffer.getvalue())
+
+
+class AsperaUploadTests(unittest.TestCase):
+    """Webin-CLI uploads over FTP unless told otherwise; these cover the Aspera route."""
+
+    def _console(self) -> tuple[Console, StringIO]:
+        buffer = StringIO()
+        return Console(file=buffer, width=100, force_terminal=False), buffer
+
+    def _credentials(self, tmpdir: str) -> config_module.EnaCredentials:
+        return config_module.EnaCredentials("Webin-1", "secret", Path(tmpdir) / "creds")
+
+    def test_transport_prefers_aspera_when_ascp_is_on_path(self):
+        console, buffer = self._console()
+        with mock.patch("mjolnirtools.ena.shutil.which", return_value="/opt/aspera/bin/ascp"):
+            self.assertTrue(ena.resolve_upload_transport(console, prefer_aspera=True))
+
+        output = buffer.getvalue()
+        self.assertIn("Aspera", output)
+        self.assertIn("/opt/aspera/bin/ascp", output)
+
+    def test_a_missing_ascp_asks_the_user_to_load_the_module_first(self):
+        console, buffer = self._console()
+        with mock.patch("mjolnirtools.ena.shutil.which", return_value=None):
+            with mock.patch("mjolnirtools.ena.typer.confirm", return_value=False) as confirm:
+                # None means stop: the user would rather load the module than use FTP.
+                self.assertIsNone(ena.resolve_upload_transport(console, prefer_aspera=True))
+
+        confirm.assert_called_once()
+        output = buffer.getvalue()
+        self.assertIn("ascp was not found in PATH", output)
+        self.assertIn(f"module load {ena.ASPERA_MODULE}", output)
+
+    def test_a_missing_ascp_still_allows_ftp_when_the_user_insists(self):
+        console, buffer = self._console()
+        with mock.patch("mjolnirtools.ena.shutil.which", return_value=None):
+            with mock.patch("mjolnirtools.ena.typer.confirm", return_value=True):
+                self.assertFalse(ena.resolve_upload_transport(console, prefer_aspera=True))
+
+        self.assertIn("Upload transport: FTP", buffer.getvalue())
+
+    def test_the_module_check_is_skipped_when_ftp_was_asked_for(self):
+        console, _ = self._console()
+        with mock.patch("mjolnirtools.ena.typer.confirm") as confirm:
+            self.assertFalse(ena.resolve_upload_transport(console, prefer_aspera=False))
+
+        # --no-aspera is an explicit choice; it must not be second-guessed.
+        confirm.assert_not_called()
+
+    def test_loaded_modules_are_read_from_the_shell_environment(self):
+        with mock.patch.dict(os.environ, {"LOADEDMODULES": "java/17:aspera-connect/3.9.6"}):
+            self.assertEqual(
+                ena.loaded_environment_modules(), ("java/17", "aspera-connect/3.9.6")
+            )
+        with mock.patch.dict(os.environ, {"LOADEDMODULES": ""}):
+            self.assertEqual(ena.loaded_environment_modules(), ())
+
+    def test_only_modules_that_carry_ascp_count_as_loaded(self):
+        self.assertEqual(ena.aspera_module_loaded(("aspera-connect/3.9.6",)), "aspera-connect/3.9.6")
+        self.assertEqual(ena.aspera_module_loaded(("aspera-cli/3.9.6",)), "aspera-cli/3.9.6")
+        # 4.x aspera-cli is the Ruby client: it installs ascli, not ascp.
+        self.assertIsNone(ena.aspera_module_loaded(("aspera-cli/4.20.0",)))
+        self.assertIsNone(ena.aspera_module_loaded(("java/17",)))
+        self.assertIsNone(ena.aspera_module_loaded(()))
+
+    def test_a_loaded_module_without_ascp_is_named_in_the_prompt(self):
+        console, buffer = self._console()
+        with mock.patch("mjolnirtools.ena.shutil.which", return_value=None):
+            with mock.patch.dict(os.environ, {"LOADEDMODULES": "aspera-cli/3.9.6"}):
+                with mock.patch("mjolnirtools.ena.typer.confirm", return_value=False):
+                    ena.resolve_upload_transport(console, prefer_aspera=True)
+
+        output = buffer.getvalue()
+        self.assertIn("aspera-cli/3.9.6", output)
+        self.assertIn("no ascp came with it", output)
+
+    def test_no_aspera_keeps_ftp_even_when_ascp_is_installed(self):
+        console, buffer = self._console()
+        with mock.patch("mjolnirtools.ena.shutil.which", return_value="/opt/aspera/bin/ascp"):
+            self.assertFalse(ena.resolve_upload_transport(console, prefer_aspera=False))
+
+        self.assertIn("--no-aspera", buffer.getvalue())
+
+    def _webin_cli_command(self, *, use_aspera: bool) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            completed = mock.Mock(returncode=0, stdout="", stderr="")
+            with mock.patch("mjolnirtools.ena.subprocess.run", return_value=completed) as run:
+                ena._run_manifest_webin_cli(
+                    jar=base / "webin-cli.jar",
+                    credentials=self._credentials(tmpdir),
+                    context="reads",
+                    manifest=base / "reads_run.manifest.txt",
+                    input_dir=base / "reads",
+                    output_dir=base / "out",
+                    test_service=False,
+                    use_aspera=use_aspera,
+                )
+            return run.call_args[0][0]
+
+    def test_aspera_adds_the_ascp_flag_to_webin_cli(self):
+        self.assertIn("-ascp", self._webin_cli_command(use_aspera=True))
+
+    def test_ftp_upload_leaves_webin_cli_on_its_default_transport(self):
+        self.assertNotIn("-ascp", self._webin_cli_command(use_aspera=False))
+
+    def test_a_blocked_ftp_data_channel_is_recognised_in_webin_cli_output(self):
+        # The report from a run that connected, announced the file, sent nothing,
+        # and retried 16 minutes later.
+        stalled = (
+            "2026-09-08T14:11:24 INFO : Submission(s) validated successfully.\n"
+            "2026-09-08T14:11:24 INFO : Connecting to FTP server : webin2.ebi.ac.uk\n"
+            "2026-09-08T14:11:25 INFO : Uploading file: /data/AC79_223JWCLT4_L2_1.fq.gz\n"
+            "2026-09-08T14:27:32 WARN : Retrying file upload to FTP server.\n"
+        )
+        self.assertTrue(ena.stalled_on_ftp(stalled))
+
+    def test_a_successful_ftp_upload_is_not_reported_as_a_stall(self):
+        clean = (
+            "INFO : Connecting to FTP server : webin2.ebi.ac.uk\n"
+            "INFO : Uploading file: /data/AC79_223JWCLT4_L2_1.fq.gz\n"
+            "INFO : The submission has been completed successfully.\n"
+        )
+        self.assertFalse(ena.stalled_on_ftp(clean))
+
+    def test_a_failure_that_never_mentions_ftp_is_not_reported_as_a_stall(self):
+        self.assertFalse(ena.stalled_on_ftp("ERROR: Invalid manifest file."))
+
+    def test_a_stalled_run_tells_the_user_about_aspera(self):
+        console, buffer = self._console()
+        ena._report_ftp_stall(console, use_aspera=False)
+
+        output = buffer.getvalue()
+        self.assertIn("stalled", output)
+        self.assertIn("module avail aspera", output)
+
+    def test_a_stall_while_using_aspera_points_at_ascp_instead(self):
+        console, buffer = self._console()
+        ena._report_ftp_stall(console, use_aspera=True)
+
+        self.assertIn("fell back to FTP", buffer.getvalue())
+
+    def test_generated_script_checks_for_ascp_before_it_submits_anything(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            script = base / "submit.sh"
+            ena.write_submission_script(
+                script_path=script,
+                credentials_path=base / "credentials",
+                sample_xml=base / "sample.xml",
+                submission_xml=base / "submission.xml",
+                receipt_xml=base / "receipt.xml",
+                log_path=base / "submit.log",
+                webin_cli_jar=base / "webin-cli.jar",
+                context="reads",
+                manifests=[base / "reads_run.manifest.txt"],
+                input_dir=base / "reads",
+                output_dir=base / "out",
+                test_service=False,
+                source=base / "reads",
+                keep_original=True,
+                use_aspera=True,
+            )
+            text = script.read_text()
+
+        self.assertIn("-submit -ascp", text)
+        self.assertIn("command -v ascp", text)
+        # Like the Java check, this must fail before the first submission, not after.
+        self.assertLess(text.index("command -v ascp"), text.index("curl -sS"))
+
+    def test_generated_script_omits_the_ascp_flag_for_an_ftp_submission(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            script = base / "submit.sh"
+            ena.write_submission_script(
+                script_path=script,
+                credentials_path=base / "credentials",
+                sample_xml=base / "sample.xml",
+                submission_xml=base / "submission.xml",
+                receipt_xml=base / "receipt.xml",
+                log_path=base / "submit.log",
+                webin_cli_jar=base / "webin-cli.jar",
+                context="reads",
+                manifests=[base / "reads_run.manifest.txt"],
+                input_dir=base / "reads",
+                output_dir=base / "out",
+                test_service=False,
+                source=base / "reads",
+                keep_original=True,
+            )
+            text = script.read_text()
+
+        self.assertNotIn("-ascp", text)
+        self.assertNotIn("command -v ascp", text)
 
 
 if __name__ == "__main__":

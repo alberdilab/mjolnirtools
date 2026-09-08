@@ -2,6 +2,58 @@
 
 All notable changes to `mjolnirtools` will be documented in this file.
 
+## 1.3.6 - 2026-09-08
+
+### Added
+
+- `mt transfer ena` now uploads over Aspera when `ascp` is on `PATH`, and says
+  which transport it picked before submitting anything. Webin-CLI's default is
+  FTP, which opens a second connection on a high port to carry the data; a
+  firewall that allows the control connection and drops that one leaves the
+  upload hanging with no output at all — the run table shows `uploading...`
+  while Webin-CLI announces the file, sends nothing, and retries sixteen
+  minutes later. Aspera needs no second connection, so it goes through where
+  FTP stalls. Detection uses `PATH`, the same place Webin-CLI's `-ascp` option
+  looks, so what the wizard reports is what Webin-CLI will use. `--no-aspera`
+  forces FTP.
+
+  A submission that reaches the upload step without `ascp` on `PATH` now stops
+  and asks, naming the module to load (`module load aspera-connect/3.9.6`)
+  rather than falling back to a transport that may hang for hours. Declining
+  submits nothing, so the workspace resumes cleanly once the module is loaded;
+  accepting continues over FTP, which is correct on a host where FTP works.
+  Loaded modules are read from `LOADEDMODULES`, since `module` is a shell
+  function and cannot be run as a subprocess. A module that looks like Aspera
+  but supplied no `ascp` is named in the prompt, because `aspera-cli` 4.x is
+  exactly that case.
+
+  A failed upload whose log shows FTP retries or connection failures is now
+  reported as a stalled transport rather than a bare failure, with the commands
+  that make Aspera available and a pointer to resume the submission afterwards.
+  Those name `ascp` specifically: conda's `aspera-cli` package installs the Ruby
+  client `ascli`, which then downloads `ascp` on request, so the package alone
+  does not put the transfer binary on `PATH`. Aspera, like Java, cannot be a
+  `pip` dependency, so it is not declared in `pyproject.toml`. See the upload
+  transport section of the `mt transfer ena` documentation.
+
+### Fixed
+
+- A mistyped command is no longer reported as a bug in mjolnirtools. Running
+  `mt ena transfer` — the words of `mt transfer ena` in the wrong order —
+  printed `UsageError: No such command 'ena'.` followed by an invitation to file
+  an issue, which sent users to the tracker for their own typo. Unknown commands
+  are now caught before Click sees them and answered with a suggestion: the
+  swapped word order (`mt ena transfer` → `mt transfer ena`), the command a lone
+  subcommand belongs to (`mt ena` → `mt transfer ena` or `mt config ena`),
+  `mt slurm <jobid>` for a bare job id, and the closest command name for a
+  misspelling. Every case ends with a pointer to `mt help` and exits with the
+  usual usage status of 2.
+
+  The last-resort handler now also recognises Click usage errors by class name
+  as well as by type, so an environment with two Click installations on the path
+  — where `isinstance` fails against an otherwise identical class — can no
+  longer route a usage mistake into the bug-report message.
+
 ## 1.3.5 - 2026-09-08
 
 ### Fixed

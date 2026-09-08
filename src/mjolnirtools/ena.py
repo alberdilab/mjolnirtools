@@ -49,6 +49,21 @@ JAVA_INSTALL_HINTS = (
     "With conda:  conda install -c conda-forge openjdk=21",
     "Or point PATH and JAVA_HOME at a JDK 17 or newer that is already installed.",
 )
+ASPERA_DOC_URL = (
+    "https://ena-docs.readthedocs.io/en/latest/submit/general-guide/webin-cli.html"
+)
+ASPERA_MODULE = "aspera-connect/3.9.6"
+# conda's aspera-cli package is the Ruby command-line client, which ships
+# ascli and not the ascp transfer binary Webin-CLI needs; ascli downloads ascp
+# separately, so installing the package alone leaves PATH without ascp.
+ASPERA_INSTALL_HINTS = (
+    "On an HPC:  module avail aspera   then  module load <a module with ascp>",
+    "    aspera-connect and aspera-cli 3.x carry ascp; aspera-cli 4.x does not",
+    "conda's aspera-cli provides ascli, not ascp. With ascli installed:",
+    "    ascli conf ascp install     then put the directory it reports on PATH:",
+    '    export PATH="$(dirname "$(ascli conf ascp show)"):$PATH"',
+    "Or install IBM Aspera Connect and add its bin/ directory to PATH.",
+)
 STUDY_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/study.html"
 STUDY_PROGRAMMATIC_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/study/programmatic.html"
 SAMPLE_DOC_URL = "https://ena-docs.readthedocs.io/en/latest/submit/samples.html"
@@ -1351,10 +1366,22 @@ def write_submission_script(
     test_service: bool,
     source: Path,
     keep_original: bool,
+    use_aspera: bool = False,
 ) -> None:
     """Write the shell script that submits metadata and data to ENA."""
     submit_url = WEBIN_TEST_SUBMIT_URL if test_service else WEBIN_PROD_SUBMIT_URL
     test_flag = " -test" if test_service else ""
+    ascp_flag = " -ascp" if use_aspera else ""
+    ascp_guard = ""
+    if use_aspera:
+        ascp_guard = """
+if ! command -v ascp >/dev/null 2>&1; then
+  echo "ERROR: Aspera upload was requested, but ascp was not found in PATH." >&2
+  echo "  Load an Aspera module (module avail aspera), or install the Aspera transfer" >&2
+  echo "  binary with: ascli conf ascp install" >&2
+  exit 1
+fi
+"""
     delete_block = "echo 'Source kept.'"
     if not keep_original:
         delete_block = f"rm -rf {shlex.quote(str(source))} && echo 'Source deleted.'"
@@ -1396,7 +1423,7 @@ if [ -n "$JAVA_MAJOR" ] && [ "$JAVA_MAJOR" -lt {WEBIN_CLI_MIN_JAVA} ]; then
   echo "  Load a Java module (module avail java), or: conda install -c conda-forge openjdk=21" >&2
   exit 1
 fi
-
+{ascp_guard}
 mkdir -p "$OUTPUT_DIR"
 
 echo "Submitting sample metadata..."
@@ -1423,7 +1450,7 @@ for MANIFEST_FILE in "${{MANIFESTS[@]}}"; do
     -manifest "$MANIFEST_FILE" \\
     -inputDir "$INPUT_DIR" \\
     -outputDir "$OUTPUT_DIR" \\
-    -submit{test_flag}
+    -submit{ascp_flag}{test_flag}
 done
 
 {delete_block}
@@ -1860,13 +1887,14 @@ def run_transfer_wizard(
     source: str | None,
     keep_original: bool,
     resume: str | None = None,
+    prefer_aspera: bool = True,
 ) -> int:
     """Run the ENA submission wizard, reporting filesystem problems as plain messages."""
     console = Console()
     try:
         if resume is not None:
-            return _resume_transfer_wizard(console, resume, keep_original)
-        return _run_transfer_wizard(console, source, keep_original)
+            return _resume_transfer_wizard(console, resume, keep_original, prefer_aspera)
+        return _run_transfer_wizard(console, source, keep_original, prefer_aspera)
     except errors_module.UserError as exc:
         console.print()
         errors_module.print_user_error(console, exc)
@@ -1903,7 +1931,12 @@ def _describe_submission_state(console: Console, state: SubmissionState) -> None
             console.print(f"      - {STAGE_LABELS[stage]}")
 
 
-def _resume_transfer_wizard(console: Console, resume: str, keep_original: bool) -> int:
+def _resume_transfer_wizard(
+    console: Console,
+    resume: str,
+    keep_original: bool,
+    prefer_aspera: bool = True,
+) -> int:
     """Continue a submission prepared by an earlier run of the wizard."""
     workspace = errors_module.expand_path(resume, action="read")
     state = load_submission_state(workspace)
@@ -1921,7 +1954,7 @@ def _resume_transfer_wizard(console: Console, resume: str, keep_original: bool) 
             "  Start a new submission with: [bold]mt transfer ena <path>[/bold]"
         )
         return 0
-    outcome = _resume_from_state(console, state, keep_original)
+    outcome = _resume_from_state(console, state, keep_original, prefer_aspera)
     if outcome is None:
         console.print("  [yellow]Cancelled.[/yellow]")
         return 0
@@ -1932,6 +1965,7 @@ def _resume_from_state(
     console: Console,
     state: SubmissionState,
     keep_original: bool,
+    prefer_aspera: bool = True,
 ) -> int | None:
     """Show a prepared submission, confirm it, and run the submission steps that remain.
 
@@ -1987,10 +2021,16 @@ def _resume_from_state(
         state=state,
         credentials=credentials,
         keep_original=keep_original,
+        prefer_aspera=prefer_aspera,
     )
 
 
-def _run_transfer_wizard(console: Console, source: str | None, keep_original: bool) -> int:
+def _run_transfer_wizard(
+    console: Console,
+    source: str | None,
+    keep_original: bool,
+    prefer_aspera: bool = True,
+) -> int:
     """Run the interactive ENA submission wizard."""
     # Auto-discover source if not provided
     if source is None:
@@ -2306,6 +2346,7 @@ def _run_transfer_wizard(console: Console, source: str | None, keep_original: bo
         state=state,
         credentials=credentials,
         keep_original=keep_original,
+        prefer_aspera=prefer_aspera,
     )
 
 
@@ -2315,6 +2356,7 @@ def _run_submission_phase(
     state: SubmissionState,
     credentials: config_module.EnaCredentials,
     keep_original: bool,
+    prefer_aspera: bool = True,
 ) -> int:
     """Submit the prepared metadata and data files, recording each accepted stage.
 
@@ -2323,6 +2365,13 @@ def _run_submission_phase(
     rejects a repeat as an alias that already exists.
     """
     if not _ensure_java_runtime(console):
+        return 1
+    use_aspera = resolve_upload_transport(console, prefer_aspera)
+    if use_aspera is None:
+        console.print()
+        console.print("  [yellow]Stopped before submitting anything.[/yellow]")
+        console.print(f"  [cyan]module load {ASPERA_MODULE}[/cyan]")
+        console.print(f"  [cyan]mt transfer ena --resume {state.workspace}[/cyan]")
         return 1
     webin_cli_jar = _ensure_webin_cli_jar(console)
     if webin_cli_jar is None:
@@ -2368,6 +2417,7 @@ def _run_submission_phase(
                 output_dir=workspace / "webin-cli-output-test",
                 test_service=True,
                 log_dir=log_dir,
+                use_aspera=use_aspera,
             )
             if not test_ok:
                 return 1
@@ -2447,6 +2497,7 @@ def _run_submission_phase(
                 output_dir=workspace / "webin-cli-output-production",
                 test_service=False,
                 log_dir=log_dir,
+                use_aspera=use_aspera,
             )
             if not prod_ok:
                 return 1
@@ -2484,6 +2535,7 @@ def _run_submission_phase(
                 output_dir=workspace / "webin-cli-output",
                 test_service=False,
                 log_dir=log_dir,
+                use_aspera=use_aspera,
             )
             if not data_ok:
                 return 1
@@ -2834,6 +2886,92 @@ def _ensure_java_runtime(console: Console) -> bool:
     return True
 
 
+def detect_ascp() -> str | None:
+    """Return the path of the ``ascp`` on PATH, or None when Aspera is not installed.
+
+    Webin-CLI's ``-ascp`` option looks Aspera up on PATH and nowhere else, so
+    resolving it the same way means the wizard reports exactly what Webin-CLI
+    will find.
+    """
+    return shutil.which("ascp")
+
+
+def loaded_environment_modules() -> tuple[str, ...]:
+    """Return the environment modules loaded in the calling shell.
+
+    ``module`` is a shell function rather than a program, so it cannot be run as
+    a subprocess to ask. Both Environment Modules and Lmod export the loaded
+    list in ``LOADEDMODULES``, which the wizard inherits, and that is the only
+    reliable way to read it from inside a Python process.
+    """
+    return tuple(name for name in os.environ.get("LOADEDMODULES", "").split(":") if name)
+
+
+def aspera_module_loaded(modules: tuple[str, ...] | None = None) -> str | None:
+    """Return a loaded module that should provide ``ascp``, or None if there is none.
+
+    ``aspera-connect`` ships ``ascp``, and so do the pre-4.0 ``aspera-cli``
+    releases. The 4.x ``aspera-cli`` module is the Ruby client, which installs
+    ``ascli`` and downloads ``ascp`` separately, so it does not count as loaded.
+    """
+    if modules is None:
+        modules = loaded_environment_modules()
+    for module in modules:
+        name, _, version = module.partition("/")
+        if name == "aspera-connect":
+            return module
+        if name == "aspera-cli" and version and not version.startswith("4"):
+            return module
+    return None
+
+
+def resolve_upload_transport(console: Console, prefer_aspera: bool) -> bool | None:
+    """Decide whether Webin-CLI should upload over Aspera, and report the choice.
+
+    Returns True for Aspera, False for FTP, and None when the user stops the run
+    to load the Aspera module first.
+
+    Webin-CLI uploads over FTP by default, which needs a second connection on a
+    high port for the data channel. Firewalls that allow the control connection
+    while dropping that one leave the upload hanging with no output until it
+    times out minutes later, so Aspera is preferred wherever it is installed.
+    """
+    if not prefer_aspera:
+        console.print("  [green]Upload transport:[/green] FTP (--no-aspera)")
+        return False
+
+    ascp = detect_ascp()
+    if ascp is not None:
+        console.print(f"  [green]Upload transport:[/green] Aspera ({ascp})")
+        return True
+
+    return _confirm_ftp_without_aspera(console)
+
+
+def _confirm_ftp_without_aspera(console: Console) -> bool | None:
+    """Ask whether to fall back to FTP, having said how to get Aspera instead.
+
+    Returns False to continue over FTP, or None to stop so the module can be
+    loaded. FTP is a working transport on a host that permits it, so this asks
+    rather than refusing outright.
+    """
+    console.print("  [yellow]Aspera is not available:[/yellow] ascp was not found in PATH.")
+    wrong_module = aspera_module_loaded()
+    if wrong_module is not None:
+        console.print(
+            f"  [yellow]{wrong_module}[/yellow] is loaded but no ascp came with it."
+        )
+    console.print(f"  Load it with:  [bold cyan]module load {ASPERA_MODULE}[/bold cyan]")
+    console.print(
+        "  Without it, Webin-CLI uploads over FTP, which stalls behind a firewall\n"
+        "  that drops the separate connection an FTP transfer needs."
+    )
+    if typer.confirm("  Upload over FTP anyway?", default=False):
+        console.print("  [green]Upload transport:[/green] FTP")
+        return False
+    return None
+
+
 def _ensure_webin_cli_jar(console: Console) -> Path | None:
     """Return a Webin-CLI JAR path, downloading and caching it if not already present."""
     env_jar = os.environ.get("WEBIN_CLI_JAR", "").strip()
@@ -2935,6 +3073,7 @@ def _run_manifest_webin_cli(
     input_dir: Path,
     output_dir: Path,
     test_service: bool,
+    use_aspera: bool = False,
 ) -> tuple[bool, str]:
     """Run Webin-CLI for one manifest. Returns (success, combined_output)."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2948,6 +3087,8 @@ def _run_manifest_webin_cli(
         "-outputDir", str(output_dir),
         "-submit",
     ]
+    if use_aspera:
+        cmd.append("-ascp")
     if test_service:
         cmd.append("-test")
 
@@ -2960,6 +3101,54 @@ def _run_manifest_webin_cli(
         return False, f"ERROR: {exc}"
 
 
+FTP_STALL_MARKERS = (
+    "retrying file upload",
+    "failed to upload files",
+    "connection timed out",
+    "connection reset",
+)
+
+
+def stalled_on_ftp(output: str) -> bool:
+    """Report whether Webin-CLI output looks like a blocked FTP data channel.
+
+    A firewall that permits the FTP control connection but drops the separate
+    data connection produces no error of its own: Webin-CLI logs the file it is
+    about to send, sends nothing, and retries once the socket finally times out
+    minutes later. Matching on FTP retries and connection failures turns that
+    silence into an explanation the user can act on.
+    """
+    lowered = output.lower()
+    if "ftp" not in lowered:
+        return False
+    return any(marker in lowered for marker in FTP_STALL_MARKERS)
+
+
+def _report_ftp_stall(console: Console, *, use_aspera: bool) -> None:
+    """Explain a stalled FTP upload and point at the transport that avoids it."""
+    console.print()
+    console.print(
+        "  [yellow]The upload stalled talking to ENA's FTP server.[/yellow]\n"
+        "  Webin-CLI connected and then retried the transfer without sending the file,\n"
+        "  which is what a firewall looks like when it allows the FTP control connection\n"
+        "  but drops the separate data connection the transfer needs."
+    )
+    if use_aspera:
+        console.print(
+            "  Aspera was selected for this submission, so Webin-CLI fell back to FTP on\n"
+            "  its own. Check that ascp runs on this host."
+        )
+    else:
+        console.print("  Uploading over Aspera does not use that second connection:")
+        for hint in ASPERA_INSTALL_HINTS:
+            console.print(f"    {hint}")
+        console.print(
+            "  Then resume the submission — the wizard uses Aspera automatically once\n"
+            "  ascp is on PATH."
+        )
+    console.print(f"  Webin-CLI upload options: {ASPERA_DOC_URL}")
+
+
 def _run_sample_submissions_with_progress(
     console: Console,
     jar: Path,
@@ -2970,6 +3159,7 @@ def _run_sample_submissions_with_progress(
     output_dir: Path,
     test_service: bool,
     log_dir: Path,
+    use_aspera: bool = False,
 ) -> bool:
     """Run Webin-CLI per run and display a live per-run status table."""
     run_names = [run.run_name for _alias, run, _manifest in run_manifests]
@@ -2984,7 +3174,8 @@ def _run_sample_submissions_with_progress(
         }.get(s, s)
 
     def _build_table() -> Table:
-        t = Table(title="ENA Data Submission", show_lines=True)
+        transport = "Aspera" if use_aspera else "FTP"
+        t = Table(title=f"ENA Data Submission (over {transport})", show_lines=True)
         t.add_column("Sample", style="cyan", no_wrap=True)
         t.add_column("Run", style="magenta", no_wrap=True)
         t.add_column("Files", justify="right")
@@ -3005,6 +3196,7 @@ def _run_sample_submissions_with_progress(
         return t
 
     all_ok = True
+    stalled = False
     with Live(_build_table(), console=console, refresh_per_second=4) as live:
         for _alias, run, manifest in run_manifests:
             statuses[run.run_name] = "running"
@@ -3018,6 +3210,7 @@ def _run_sample_submissions_with_progress(
                 input_dir=input_dir,
                 output_dir=output_dir / run.run_name,
                 test_service=test_service,
+                use_aspera=use_aspera,
             )
             log_file = log_dir / f"webin-cli-{run.run_name}.log"
             log_file.write_text(output)
@@ -3025,11 +3218,15 @@ def _run_sample_submissions_with_progress(
             live.update(_build_table())
             if not success:
                 all_ok = False
+                if stalled_on_ftp(output):
+                    stalled = True
 
     failed = [name for name in run_names if statuses[name] == "failed"]
     if failed:
         console.print(f"  [bold red]Failed:[/bold red] {', '.join(failed)}")
         console.print(f"  Logs: {log_dir}")
+    if stalled:
+        _report_ftp_stall(console, use_aspera=use_aspera)
     return all_ok
 
 

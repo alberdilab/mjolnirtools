@@ -168,11 +168,86 @@ submission that stopped on this check can be continued with
 ``mt transfer ena --resume <workspace>`` once Java is available; stages ENA has
 already accepted are not repeated.
 
+.. _ena-upload-transport:
+
+Upload transport: Aspera and FTP
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Webin-CLI uploads data files over FTP by default. FTP opens a second connection
+on a high port for the data itself, and a firewall that permits the control
+connection while dropping that data connection leaves the upload hanging: the
+report shows the file being announced, nothing is sent, and Webin-CLI retries
+once the socket times out many minutes later.
+
+.. code-block:: text
+
+   2026-09-08T14:11:24 INFO : Connecting to FTP server : webin2.ebi.ac.uk
+   2026-09-08T14:11:25 INFO : Uploading file: /path/AC79_223JWCLT4_L2_1.fq.gz
+   2026-09-08T14:27:32 WARN : Retrying file upload to FTP server.
+
+Aspera does not use a separate data connection, so it goes through where FTP
+stalls, and it is faster over long distances. ``mt transfer ena`` looks for
+``ascp`` on ``PATH`` — the same place Webin-CLI looks — and uses Aspera
+automatically when it is there, reporting the choice before submitting:
+
+.. code-block:: console
+
+   Upload transport: Aspera (/opt/aspera/cli/bin/ascp)
+   Upload transport: FTP (ascp not found in PATH)
+
+When ``ascp`` is missing, the wizard stops and asks before falling back to FTP:
+
+.. code-block:: console
+
+   Aspera is not available: ascp was not found in PATH.
+   Load it with:  module load aspera-connect/3.9.6
+   Without it, Webin-CLI uploads over FTP, which stalls behind a firewall
+   that drops the separate connection an FTP transfer needs.
+   Upload over FTP anyway? [y/N]:
+
+Answering ``n`` stops before anything is submitted, so the workspace can be
+resumed once the module is loaded. Answering ``y`` continues over FTP, which is
+the right answer on a host where FTP works. If a module that looks like Aspera
+is loaded but did not supply ``ascp``, the wizard names it — ``aspera-cli`` 4.x
+is the usual culprit. ``--no-aspera`` skips the question entirely.
+
+The module has to be loaded in the shell that runs ``mt``. If the submission
+runs inside a ``screen`` session, load it inside that session.
+
+To make Aspera available, ``ascp`` — the transfer binary — has to be on
+``PATH``. On a cluster, look for a module first:
+
+.. code-block:: console
+
+   $ module avail aspera        # then load a module that carries ascp
+
+Not every module named for Aspera provides it: ``aspera-connect`` and the
+pre-4.0 ``aspera-cli`` releases bundle ``ascp``, while ``aspera-cli`` 4.x is the
+Ruby client and does not.
+
+Note that conda's ``aspera-cli`` package is the Ruby command-line client: it
+installs ``ascli``, not ``ascp``, so installing it alone leaves ``PATH``
+without the binary Webin-CLI needs. ``ascli`` downloads ``ascp`` separately:
+
+.. code-block:: console
+
+   $ conda install -c bioconda aspera-cli
+   $ ascli conf ascp install
+   $ export PATH="$(dirname "$(ascli conf ascp show)"):$PATH"
+   $ command -v ascp            # confirm before resuming
+
+Installing IBM Aspera Connect and adding its ``bin/`` directory to ``PATH``
+works too.
+
+When a submission does stall on FTP, the wizard says so at the end of the run
+and points at these options rather than leaving the failure unexplained. Fix
+the transport and continue with ``mt transfer ena --resume <workspace>``.
+
 Usage:
 
 .. code-block:: console
 
-   $ mt transfer ena <path> [--delete]
+   $ mt transfer ena <path> [--delete] [--no-aspera]
    $ mt transfer ena --resume <workspace>
 
 Arguments:
@@ -185,6 +260,11 @@ Options:
 ``--delete``
    Delete the source path only after ENA metadata submission and Webin-CLI data
    submission both complete successfully. By default the source is kept.
+
+``--no-aspera``
+   Upload over FTP even when ``ascp`` is on ``PATH``. Use this only to rule
+   Aspera out as the cause of a problem; FTP is the transport that stalls
+   behind a firewall. See `Upload transport: Aspera and FTP`_.
 
 ``--resume <workspace>``
    Continue the submission prepared in an existing workspace instead of

@@ -825,7 +825,7 @@ class CliTests(unittest.TestCase):
                 exit_code = cli.main(["transfer", "ena", "reads"])
 
         self.assertEqual(exit_code, 0)
-        wizard.assert_called_once_with("reads", True, resume=None)
+        wizard.assert_called_once_with("reads", True, resume=None, prefer_aspera=True)
 
     def test_transfer_ena_delete_passes_keep_original_false(self):
         with mock.patch("mjolnirtools.cli.config_module._config_has_ena", return_value=True):
@@ -833,7 +833,23 @@ class CliTests(unittest.TestCase):
                 exit_code = cli.main(["transfer", "ena", "reads", "--delete"])
 
         self.assertEqual(exit_code, 0)
-        wizard.assert_called_once_with("reads", False, resume=None)
+        wizard.assert_called_once_with("reads", False, resume=None, prefer_aspera=True)
+
+    def test_transfer_ena_no_aspera_forces_ftp_upload(self):
+        with mock.patch("mjolnirtools.cli.config_module._config_has_ena", return_value=True):
+            with mock.patch("mjolnirtools.cli.ena.run_transfer_wizard", return_value=0) as wizard:
+                exit_code = cli.main(["transfer", "ena", "reads", "--no-aspera"])
+
+        self.assertEqual(exit_code, 0)
+        wizard.assert_called_once_with("reads", True, resume=None, prefer_aspera=False)
+
+    def test_transfer_erda_rejects_no_aspera(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["transfer", "erda", "reads", "dest", "--no-aspera"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("--no-aspera is only supported for mt transfer ena", stderr.getvalue())
 
     def test_system_resources_prints_usage_progress_rows(self):
         scontrol_output = (
@@ -1167,14 +1183,57 @@ class CliTests(unittest.TestCase):
         self.assertLess(help_text.index("System"), help_text.index("Information"))
         self.assertEqual(help_text.count("mt system resources"), 1)
 
-    def test_unknown_command_reports_click_error_without_traceback(self):
+    def test_unknown_command_reports_usage_error_without_traceback(self):
         stderr = io.StringIO()
         with redirect_stderr(stderr):
             exit_code = cli.main(["queues"])
 
         self.assertEqual(exit_code, 2)
-        self.assertIn("No such command 'queues'", stderr.getvalue())
+        self.assertIn("Unknown mt command: 'queues'", stderr.getvalue())
+        self.assertIn("mt help", stderr.getvalue())
+        self.assertNotIn("bug in mjolnirtools", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_unknown_command_suggests_swapped_word_order(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["ena", "transfer"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("mt transfer ena", stderr.getvalue())
+        self.assertNotIn("bug in mjolnirtools", stderr.getvalue())
+
+    def test_unknown_command_suggests_subcommands_for_a_bare_keyword(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["ena"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("mt transfer ena", stderr.getvalue())
+        self.assertIn("mt config ena", stderr.getvalue())
+
+    def test_unknown_command_suggests_the_closest_command_for_a_typo(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["slrum", "list"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("mt slurm list", stderr.getvalue())
+
+    def test_unknown_command_suggests_slurm_for_a_bare_job_id(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = cli.main(["12345"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("mt slurm 12345", stderr.getvalue())
+
+    def test_usage_error_from_a_second_click_install_is_not_called_a_bug(self):
+        class UsageError(Exception):
+            """Stand-in for a UsageError raised by a duplicated Click install."""
+
+        self.assertTrue(cli.is_usage_error(UsageError("No such command 'ena'.")))
+        self.assertFalse(cli.is_usage_error(RuntimeError("boom")))
 
     def test_main_help_shows_subcommand_tree(self):
         stdout = io.StringIO()
